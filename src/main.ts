@@ -1,25 +1,23 @@
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
-import { ValidationPipe } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { ApiExceptionFilter } from './common/filters/http-exception.filter';
+import { NestFactory } from '@nestjs/core'; // Import NestFactory để tạo app
+import { AppModule } from './app.module'; // Import module root
+import { ValidationPipe } from '@nestjs/common'; // Import ValidationPipe
+import { ConfigService } from '@nestjs/config'; // Import ConfigService
+import { ApiExceptionFilter } from './common/filters/http-exception.filter'; // Import filter lỗi
+
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { cors: true });
-  app.useGlobalFilters(new ApiExceptionFilter());
-  app.setGlobalPrefix('api');
-  // main.ts
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      transform: true,
-      forbidUnknownValues: true,
-    }),
-  );
+  const app = await NestFactory.create(AppModule, { cors: true }); // Tạo app với CORS bật
+  const configService = app.get(ConfigService); // Lấy ConfigService
 
-  const config = app.get(ConfigService);
-  const port = config.get<number>('app.port') ?? Number(process.env.PORT ?? 3000);
+  app.setGlobalPrefix('api'); // Giữ prefix /api
+  app.useGlobalFilters(new ApiExceptionFilter()); // Áp dụng filter lỗi
+  app.useGlobalPipes(new ValidationPipe({ // Áp dụng ValidationPipe
+    transform: true, // Transform DTO
+    whitelist: true, // Loại bỏ field không hợp lệ
+    forbidUnknownValues: true, // Throw lỗi field lạ
+  }));
 
-  await app.listen(port);
-  console.log(`🚀 ${config.get('app.name') ?? 'App'} running at http://localhost:${port}`);
+  const port = configService.get<number>('app.port') ?? 3000; // Lấy port
+  await app.listen(port); // Khởi động server
+  console.log(`🚀 ${configService.get('app.name')} running at http://localhost:${port}/api`); // Log URL
 }
-bootstrap();
+bootstrap(); // Gọi bootstrap
