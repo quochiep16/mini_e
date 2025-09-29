@@ -15,6 +15,13 @@ export enum UserRole {
   ADMIN = 'ADMIN',
 }
 
+
+// export enum UserRole {
+//   USER = 'USER',
+//   SELLER = 'SELLER',
+//   ADMIN = 'ADMIN',
+// }
+
 @Entity('users')
 @Index('users_email_uq', ['email'], { unique: true })
 @Index('users_phone_idx', ['phone'])
