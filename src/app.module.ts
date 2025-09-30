@@ -3,6 +3,9 @@ import { ConfigModule, ConfigType } from '@nestjs/config';
 import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm';
 import appConfig from './config/app.config';
 import dbConfig from './config/database.config';
+import { AccessTokenGuard } from './common/guards/access-token.guard';
+import { APP_GUARD } from '@nestjs/core'; 
+// import { RolesGuard } from './common/guards/roles.guard';
 
 // modules
 import { UsersModule } from './modules/users/users.module';
@@ -32,6 +35,10 @@ import { AuthModule } from './modules/auth/auth.module';
     }),
     UsersModule,
     AuthModule,
+  ],
+  providers: [
+    { provide: APP_GUARD, useClass: AccessTokenGuard }, // yêu cầu JWT mặc định
+    // { provide: APP_GUARD, useClass: RolesGuard },       // phân quyền (nếu có @Roles)
   ],
 })
 export class AppModule {}

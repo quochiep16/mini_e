@@ -115,4 +115,40 @@ export class AuthService {
       throw err;
     }
   }
+
+  // auth.service.ts
+private async generateAccessToken(user: User) {
+  const atSecret = this.config.get<string>('ACCESS_TOKEN_SECRET', 'change_me');
+  const atExpires = this.config.get<string>('ACCESS_TOKEN_EXPIRES', '15m');
+  const payload = { sub: user.id, email: user.email, role: user.role };
+  return this.jwt.signAsync(payload, { secret: atSecret, expiresIn: atExpires });
+}
+
+  async refresh(refreshToken: string) {
+    if (!refreshToken) throw new UnauthorizedException('Thiếu refresh token');
+
+    const rtSecret = this.config.get<string>('REFRESH_TOKEN_SECRET', 'change_me');
+    let decoded: any;
+    try {
+      decoded = await this.jwt.verifyAsync(refreshToken, { secret: rtSecret });
+    } catch {
+      throw new UnauthorizedException('Refresh token không hợp lệ');
+    }
+
+    const user = await this.usersRepo.findOne({ where: { id: decoded.sub } });
+    if (!user) throw new UnauthorizedException('Không tìm thấy người dùng');
+
+    const access_token = await this.generateAccessToken(user);
+
+    return {
+      access_token,                // chỉ cấp mới access token
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isVerified: user.isVerified,
+      },
+    };
+  }
 }
