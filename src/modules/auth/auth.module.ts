@@ -11,11 +11,14 @@ import { AuthController } from './auth.controller';
 import { User } from '../users/entities/user.entity';
 import { UsersModule } from '../users/users.module';
 
+import { EmailModule } from '../email/email.module';  // 👈 import EmailModule
+
 // 👇 Strategy cho Access & Refresh (đặt tên 'jwt' cho access guard)
 import { JwtAccessStrategy } from './strategies/jwt-access.service';
 
 @Module({
   imports: [
+    EmailModule,  // 👈 thêm EmailModule vào imports
     ConfigModule,
     TypeOrmModule.forFeature([User]),
     UsersModule,
