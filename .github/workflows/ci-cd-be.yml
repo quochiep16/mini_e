@@ -40,6 +40,9 @@ jobs:
     steps:
       - name: Pull & restart backend
         run: |
-          docker compose -f /opt/mini/docker-compose.yml pull backend
-          docker compose -f /opt/mini/docker-compose.yml up -d backend
-          docker system prune -f
+            set -e
+            cd /opt/mini
+            docker compose pull db backend
+            docker compose up -d db
+            docker compose up -d backend
+            docker system prune -f
