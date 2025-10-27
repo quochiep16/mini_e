@@ -34,16 +34,12 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   deploy:
+    # chạy deploy ngay trên self-hosted runner trong VM
     needs: build_and_push
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, mini-199]
     steps:
-      - name: Deploy backend
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            docker compose -f /opt/mini/docker-compose.yml pull backend
-            docker compose -f /opt/mini/docker-compose.yml up -d backend
-            docker system prune -f
+      - name: Pull & restart backend
+        run: |
+          docker compose -f /opt/mini/docker-compose.yml pull backend
+          docker compose -f /opt/mini/docker-compose.yml up -d backend
+          docker system prune -f
