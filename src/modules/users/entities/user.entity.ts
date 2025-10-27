@@ -1,6 +1,8 @@
+import { Shop } from 'src/modules/shops/entities/shop.entity';
 import {
   Entity, PrimaryGeneratedColumn, Column, Index,
   CreateDateColumn, UpdateDateColumn, DeleteDateColumn,
+  OneToOne,
 } from 'typeorm';
 
 export enum Gender {
@@ -67,5 +69,8 @@ export class User {
 
   @DeleteDateColumn({ nullable: true })
   deletedAt?: Date | null;
+
+  @OneToOne(() => Shop, (shop) => shop.user)
+  shop?: Shop;
 
 }

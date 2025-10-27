@@ -6,13 +6,22 @@ import dbConfig from './config/database.config';
 import { AccessTokenGuard } from './common/guards/access-token.guard';
 import { APP_GUARD } from '@nestjs/core'; 
 // import { RolesGuard } from './common/guards/roles.guard';
+import { ServeStaticModule } from '@nestjs/serve-static';
+import { join } from 'path';
 
 // modules
 import { UsersModule } from './modules/users/users.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { ShopsModule } from './modules/shops/shops.module';
+import { ProductsModule } from './modules/products/products.module';
+
 
 @Module({
   imports: [
+    ServeStaticModule.forRoot({
+      rootPath: join(process.cwd(), 'uploads'),
+      serveRoot: '/uploads',
+    }),
     ConfigModule.forRoot({
       isGlobal: true,
       load: [appConfig, dbConfig],
@@ -35,6 +44,8 @@ import { AuthModule } from './modules/auth/auth.module';
     }),
     UsersModule,
     AuthModule,
+    ShopsModule,
+    ProductsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AccessTokenGuard }, // yêu cầu JWT mặc định
