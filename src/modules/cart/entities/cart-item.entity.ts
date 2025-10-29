@@ -33,14 +33,12 @@ export class CartItem {
   @Column({ type: 'int', unsigned: true, default: 1 })
   quantity: number;
 
-  // Snapshot giá tại thời điểm thêm giỏ (để hiển thị); thanh toán sẽ tính lại
   @Column({ name: 'unit_price', type: 'decimal', precision: 12, scale: 2 })
   unitPrice: string;
 
   @Column({ type: 'char', length: 3, default: 'VND' })
   currency: string;
 
-  // Snapshot thông tin hiển thị, tránh lệ thuộc join nhiều bảng
   @Column({ name: 'product_title', type: 'varchar', length: 255 })
   productTitle: string;
 
@@ -50,7 +48,6 @@ export class CartItem {
   @Column({ name: 'image_url', type: 'varchar', length: 500, nullable: true })
   imageUrl?: string | null;
 
-  // Lựa chọn cho checkout theo lô (mua một phần giỏ)
   @Index('IDX_ci_selected')
   @Column({ name: 'is_selected', type: 'boolean', default: true })
   isSelected: boolean;

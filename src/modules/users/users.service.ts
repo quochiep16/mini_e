@@ -8,6 +8,7 @@ import { User, UserRole } from './entities/user.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { QueryUserDto } from './dto/query-user.dto';
+import { Cron, CronExpression } from '@nestjs/schedule';
 
 @Injectable()
 export class UsersService {
@@ -159,6 +160,21 @@ export class UsersService {
       meta: { page, limit, total, pageCount: Math.max(Math.ceil(total / limit), 1) },
     };
   }
+  // Mặc định: 30 ngày
+  private graceDays() {
+    return Number(this.config.get('ACCOUNT_DELETE_GRACE_DAYS') ?? 30);
+  }
 
+  @Cron(CronExpression.EVERY_DAY_AT_3AM) // chạy 03:00 mỗi ngày
+  async hardDeleteExpired() {
+    const days = this.graceDays();
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    // xoá cứng các user đã xoá mềm trước "cutoff"
+    await this.repo.createQueryBuilder()
+      .delete()
+      .from(User)
+      .where('deletedAt IS NOT NULL AND deletedAt < :cutoff', { cutoff })
+      .execute();
+  }
 
 }

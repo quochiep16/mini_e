@@ -1,18 +1,20 @@
 import { Injectable, ExecutionContext } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
 import { Reflector } from '@nestjs/core';
-import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import { AuthGuard } from '@nestjs/passport';
+import { IS_PUBLIC_KEY } from '../constants/meta-keys';
 
 @Injectable()
 export class AccessTokenGuard extends AuthGuard('jwt') {
-  constructor(private reflector: Reflector) { super(); }
+  constructor(private reflector: Reflector) {
+    super();
+  }
 
-  canActivate(ctx: ExecutionContext) {
+  canActivate(context: ExecutionContext) {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
-      ctx.getHandler(),
-      ctx.getClass(),
+      context.getHandler(),
+      context.getClass(),
     ]);
-    if (isPublic) return true;          // Bỏ qua guard nếu là public
-    return super.canActivate(ctx);      // Mặc định yêu cầu JWT
+    if (isPublic) return true;
+    return super.canActivate(context);
   }
 }

@@ -5,15 +5,18 @@ import appConfig from './config/app.config';
 import dbConfig from './config/database.config';
 import { AccessTokenGuard } from './common/guards/access-token.guard';
 import { APP_GUARD } from '@nestjs/core'; 
-// import { RolesGuard } from './common/guards/roles.guard';
+import { RolesGuard } from './common/guards/roles.guard';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
+import { ScheduleModule } from '@nestjs/schedule';
 
 // modules
 import { UsersModule } from './modules/users/users.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ShopsModule } from './modules/shops/shops.module';
 import { ProductsModule } from './modules/products/products.module';
+import { ActiveUserGuard } from './common/guards/active-user.guard';
+import { User } from './modules/users/entities/user.entity';
 
 
 @Module({
@@ -26,6 +29,8 @@ import { ProductsModule } from './modules/products/products.module';
       isGlobal: true,
       load: [appConfig, dbConfig],
     }),
+    TypeOrmModule.forFeature([User]),
+
     TypeOrmModule.forRootAsync({
       inject: [dbConfig.KEY],
       useFactory: (database: ConfigType<typeof dbConfig>) =>
@@ -46,10 +51,12 @@ import { ProductsModule } from './modules/products/products.module';
     AuthModule,
     ShopsModule,
     ProductsModule,
+    ScheduleModule.forRoot(),
   ],
   providers: [
     { provide: APP_GUARD, useClass: AccessTokenGuard }, // yêu cầu JWT mặc định
-    // { provide: APP_GUARD, useClass: RolesGuard },       // phân quyền (nếu có @Roles)
+    { provide: APP_GUARD, useClass: RolesGuard },   // phân quyền (nếu có @Roles)
+    { provide: APP_GUARD, useClass: ActiveUserGuard },     // kiểm tra tk xóa hay chưa
   ],
 })
 export class AppModule {}
