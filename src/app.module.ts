@@ -55,8 +55,9 @@ import { User } from './modules/users/entities/user.entity';
   ],
   providers: [
     { provide: APP_GUARD, useClass: AccessTokenGuard }, // yêu cầu JWT mặc định
+    { provide: APP_GUARD, useClass: ActiveUserGuard }, // kiểm tra tài khoản có bị xoá mềm hay không
     { provide: APP_GUARD, useClass: RolesGuard },   // phân quyền (nếu có @Roles)
-    { provide: APP_GUARD, useClass: ActiveUserGuard },     // kiểm tra tk xóa hay chưa
+    // kiểm tra tk xóa hay chưa
   ],
 })
 export class AppModule {}
