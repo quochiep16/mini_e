@@ -277,7 +277,7 @@ export class AuthService {
 
   // ========= Recover: gửi OTP nếu user đang xoá mềm =========
   async requestAccountRecover(dto: AccountRecoverRequestDto) {
-    const raw = dto.identifier.trim();
+    const raw = dto.email.trim();
     const byEmail = raw.includes('@');
     const value = byEmail ? raw.toLowerCase() : raw;
 
@@ -316,7 +316,7 @@ export class AuthService {
 
   // ========= Recover: xác nhận OTP + RESTORE + ĐỔI MẬT KHẨU =========
   async confirmAccountRecover(dto: AccountRecoverConfirmDto) {
-    const raw = dto.identifier.trim();
+    const raw = dto.email.trim();
     const byEmail = raw.includes('@');
     const value = byEmail ? raw.toLowerCase() : raw;
 
