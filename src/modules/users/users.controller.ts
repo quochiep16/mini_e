@@ -20,34 +20,27 @@ export class UsersController {
   
   //get me
   @Get('me')
-  async me(@CurrentUser() user: { id: number }, @Res() res: Response) {
-    const result = await this.usersService.findById(user.id);
+  async me(@CurrentUser('sub') sub: number, @Res() res: Response) {
+    const userId = Number(sub);
+    const result = await this.usersService.findById(userId);
     return res.status(HttpStatus.OK).json({ success: true, statusCode: HttpStatus.OK, data: result });
   }
 
   @Patch('me')
-  async updateMe(
-    @CurrentUser() user: { id: number },
-    @Body() dto: UpdateUserDto,
-    @Res() res: Response,
-  ) {
+  async updateMe(@CurrentUser('sub') sub: number, @Body() dto: UpdateUserDto, @Res() res: Response) {
+    const userId = Number(sub);
     delete (dto as any).role;
-    // delete (dto as any).isVerified;
-
-    const result = await this.usersService.update(user.id, dto);
+    const result = await this.usersService.update(userId, dto);
     return res.status(HttpStatus.OK).json({ success: true, statusCode: HttpStatus.OK, data: result });
   }
 
-  // Xoá mềm tài khoản của tôi
   @Delete('me')
-  async deleteMe(@CurrentUser() user: { id: number }, @Res() res: Response) {
-    await this.usersService.softDelete(user.id);
-    return res.status(HttpStatus.OK).json({
-      success: true,
-      statusCode: HttpStatus.OK,
-      data: { id: user.id, deleted: true },
-    });
+  async deleteMe(@CurrentUser('sub') sub: number, @Res() res: Response) {
+    const userId = Number(sub);
+    await this.usersService.softDelete(userId);
+    return res.status(HttpStatus.OK).json({ success: true, statusCode: HttpStatus.OK, data: { id: userId, deleted: true } });
   }
+
   // CREATE
   @Roles(AppRole.ADMIN)
   @Post()
