@@ -1,44 +1,22 @@
-import {
-  Entity, PrimaryGeneratedColumn, Column, Unique, Index,
-  OneToMany, CreateDateColumn, UpdateDateColumn
-} from 'typeorm';
+import { Column, CreateDateColumn, Entity, Index, OneToMany, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import { CartItem } from './cart-item.entity';
 
-export enum CartStatus {
-  OPEN = 'OPEN',
-  CHECKING_OUT = 'CHECKING_OUT',
-  LOCKED = 'LOCKED',
-}
-
-@Entity({ name: 'carts' })
-@Unique('UQ_cart_user', ['userId'])
+@Entity('carts')
+@Index('UQ_carts_user', ['userId'], { unique: true })
 export class Cart {
-  @PrimaryGeneratedColumn({ type: 'int', unsigned: true })
-  id: number;
+  @PrimaryGeneratedColumn() id: number;
 
-  @Index('IDX_cart_user')
-  @Column({ name: 'user_id', type: 'int', unsigned: true })
-  userId: number;
+  @Column({ type: 'int', nullable: false }) userId: number;
 
-  // Tổng nháp để hiển thị nhanh (không dùng cho thanh toán cuối cùng)
-  @Column({ name: 'items_count', type: 'int', default: 0 })
-  itemsCount: number;
+  @Column({ type: 'int', default: 0 }) itemsCount: number;
+  @Column({ type: 'int', default: 0 }) itemsQuantity: number;
 
-  @Column({ name: 'subtotal', type: 'decimal', precision: 12, scale: 2, default: 0 })
-  subtotal: string;
+  @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 }) subtotal: string;
 
-  @Column({ type: 'char', length: 3, default: 'VND' })
-  currency: string;
+  @Column({ type: 'varchar', length: 10, default: 'VND' }) currency: string;
 
-  @Column({ type: 'enum', enum: CartStatus, default: CartStatus.OPEN })
-  status: CartStatus;
+  @OneToMany(() => CartItem, (i) => i.cart, { cascade: false }) items: CartItem[];
 
-  @OneToMany(() => CartItem, (i) => i.cart, { cascade: true })
-  items: CartItem[];
-
-  @CreateDateColumn({ name: 'created_at', type: 'datetime' })
-  createdAt: Date;
-
-  @UpdateDateColumn({ name: 'updated_at', type: 'datetime' })
-  updatedAt: Date;
+  @CreateDateColumn({ type: 'datetime' }) createdAt: Date;
+  @UpdateDateColumn({ type: 'datetime' }) updatedAt: Date;
 }

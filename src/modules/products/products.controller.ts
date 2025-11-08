@@ -1,6 +1,7 @@
 import {
   BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req,
   UseGuards, UseInterceptors, UploadedFiles,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/multer-options.interface';
@@ -23,6 +24,7 @@ import { AccessTokenGuard } from '../../common/guards/access-token.guard';
 // import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { UserRole } from '../../modules/users/entities/user.entity';
+import { UpdateProductDto } from './dto/search-product.dto';
 
 // ==== cấu hình upload nhiều ảnh ====
 const uploadOptions: MulterOptions = {
@@ -83,12 +85,12 @@ export class ProductsController {
 
   @Patch(':id')
   async updateProduct(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @CurrentUser('sub') userId: number,
     @CurrentUser('role') role: UserRole,
-    @Body() body: Partial<{ title: string; slug: string; description?: string; price?: number; stock?: number }>,
+    @Body() dto: UpdateProductDto,
   ) {
-    const data = await this.productsService.updateProduct(Number(id), userId, role, body as any);
+    const data = await this.productsService.updateProduct(id, userId, role, dto);
     return { success: true, data };
   }
 

@@ -1,60 +1,36 @@
-import {
-  Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, Index, Unique,
-  CreateDateColumn, UpdateDateColumn
-} from 'typeorm';
+import { Column, CreateDateColumn, Entity, Index, JoinColumn, ManyToOne, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import { Cart } from './cart.entity';
 
-@Entity({ name: 'cart_items' })
-@Unique('UQ_cartitem_variant', ['cartId', 'variantId'])
+@Entity('cart_items')
+@Index('IDX_cart', ['cartId'])
+@Index('UQ_cartitem_unique_line', ['cartId', 'productId', 'variantId'], { unique: true })
 export class CartItem {
-  @PrimaryGeneratedColumn({ type: 'int', unsigned: true })
-  id: number;
+  @PrimaryGeneratedColumn() id: number;
 
-  @Index('IDX_ci_cart')
-  @Column({ name: 'cart_id', type: 'int', unsigned: true })
-  cartId: number;
+  @Column({ type: 'int', nullable: false }) cartId: number;
 
   @ManyToOne(() => Cart, (c) => c.items, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'cart_id' })
+  @JoinColumn({ name: 'cartId' })
   cart: Cart;
 
-  @Index('IDX_ci_shop')
-  @Column({ name: 'shop_id', type: 'int', unsigned: true })
-  shopId: number;
+  @Column({ type: 'int', nullable: false }) productId: number;
+  @Column({ type: 'int', nullable: true }) variantId: number | null;
 
-  @Index('IDX_ci_product')
-  @Column({ name: 'product_id', type: 'int', unsigned: true })
-  productId: number;
+  @Column({ type: 'varchar', length: 200 }) title: string;
+  @Column({ type: 'varchar', length: 200, nullable: true }) variantName: string | null;
 
-  @Index('IDX_ci_variant')
-  @Column({ name: 'variant_id', type: 'int', unsigned: true })
-  variantId: number;
+  @Column({ type: 'varchar', length: 80, nullable: true }) sku: string | null;
+  @Column({ type: 'int', nullable: true }) imageId: number | null;
 
-  @Column({ type: 'int', unsigned: true, default: 1 })
-  quantity: number;
+  @Column({ type: 'decimal', precision: 12, scale: 2 }) price: string;
+  @Column({ type: 'int', default: 1 }) quantity: number;
 
-  @Column({ name: 'unit_price', type: 'decimal', precision: 12, scale: 2 })
-  unitPrice: string;
+  @Column({ type: 'varchar', length: 100, nullable: true }) value1: string | null;
+  @Column({ type: 'varchar', length: 100, nullable: true }) value2: string | null;
+  @Column({ type: 'varchar', length: 100, nullable: true }) value3: string | null;
+  @Column({ type: 'varchar', length: 100, nullable: true }) value4: string | null;
+  @Column({ type: 'varchar', length: 100, nullable: true }) value5: string | null;
 
-  @Column({ type: 'char', length: 3, default: 'VND' })
-  currency: string;
-
-  @Column({ name: 'product_title', type: 'varchar', length: 255 })
-  productTitle: string;
-
-  @Column({ name: 'variant_label', type: 'varchar', length: 255, nullable: true })
-  variantLabel?: string | null;
-
-  @Column({ name: 'image_url', type: 'varchar', length: 500, nullable: true })
-  imageUrl?: string | null;
-
-  @Index('IDX_ci_selected')
-  @Column({ name: 'is_selected', type: 'boolean', default: true })
-  isSelected: boolean;
-
-  @CreateDateColumn({ name: 'created_at', type: 'datetime' })
-  createdAt: Date;
-
-  @UpdateDateColumn({ name: 'updated_at', type: 'datetime' })
-  updatedAt: Date;
+  @CreateDateColumn({ type: 'datetime' }) createdAt: Date;
+  @UpdateDateColumn({ type: 'datetime' }) updatedAt: Date;
 }

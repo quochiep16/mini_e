@@ -1,6 +1,9 @@
+import { Type } from 'class-transformer';
 import { IsInt, Min } from 'class-validator';
 
 export class UpdateItemDto {
-  @IsInt() @Min(0)
-  quantity: number; // 0 để xoá item khỏi giỏ
+  @Type(() => Number)
+  @IsInt({ message: 'quantity phải là số nguyên' })
+  @Min(0, { message: 'quantity phải ≥ 0 (0 = xoá dòng)' })
+  quantity: number;
 }

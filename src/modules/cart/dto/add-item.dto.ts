@@ -1,9 +1,18 @@
-import { IsInt, Min, IsPositive } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsInt, IsOptional, IsPositive } from 'class-validator';
 
 export class AddItemDto {
-  @IsInt() @Min(1)
-  variantId: number; // ID biến thể sản phẩm
+  @Type(() => Number)
+  @IsInt({ message: 'productId phải là số nguyên' })
+  productId: number;
 
-  @IsInt() @IsPositive()
-  quantity: number; // Số lượng thêm vào giỏ
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'variantId phải là số nguyên' })
+  variantId?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsPositive({ message: 'quantity phải > 0' })
+  quantity?: number = 1;
 }

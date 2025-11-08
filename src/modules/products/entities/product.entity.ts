@@ -47,7 +47,7 @@ export class Product {
 
   // DECIMAL -> nên map string ở runtime để tránh sai số
   @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
-  price: string;
+  price: number;
 
   @Column({ name: 'compare_at_price', type: 'decimal', precision: 12, scale: 2, nullable: true })
   compareAtPrice?: string | null;
