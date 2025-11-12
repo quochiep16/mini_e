@@ -418,9 +418,9 @@ export class ProductsService {
     const shop = await this.shopsRepo.findOne({
       where: { id: product.shopId },
     });
-    const isOwner = shop?.userId === actorId;
-    const isAdmin = actorRole === UserRole.ADMIN;
-    if (!isOwner && !isAdmin) throw new ForbiddenException('Bạn không có quyền');
+    // const isOwner = shop?.userId === actorId;
+    // const isAdmin = actorRole === UserRole.ADMIN;
+    // if (!isOwner && !isAdmin) throw new ForbiddenException('Bạn không có quyền');
 
     const variants = await this.variantsRepo.find({
       where: { productId },
