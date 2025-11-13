@@ -1,6 +1,6 @@
 import {
   Entity, PrimaryGeneratedColumn, Column, OneToOne, OneToMany,
-  CreateDateColumn, UpdateDateColumn, DeleteDateColumn, JoinColumn, Unique,
+  CreateDateColumn, UpdateDateColumn, DeleteDateColumn, JoinColumn, Unique, Index,
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 import { ShopStats } from './shop-stats.entity';
@@ -41,8 +41,25 @@ export class Shop {
   @Column({ name: 'cover_url', type: 'varchar', length: 255, nullable: true })
   coverUrl?: string;
 
-  @Column({ type: 'varchar', length: 30, nullable: true })
-  phone?: string;
+  // ====== ĐỊA CHỈ & LIÊN HỆ CỦA SHOP ======
+  @Column({ name: 'shop_address', type: 'varchar', length: 255, nullable: true })
+  shopAddress?: string | null;
+
+  // Lưu DECIMAL để chính xác; trong code dùng string để tránh sai số
+  @Column({ name: 'shop_lat', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  shopLat?: string | null;
+
+  @Column({ name: 'shop_lng', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  shopLng?: string | null;
+
+  @Index('shops_placeId_idx')
+  @Column({ name: 'shop_place_id', type: 'varchar', length: 191, nullable: true })
+  shopPlaceId?: string | null;
+
+  @Index('shops_phone_idx')
+  @Column({ name: 'shop_phone', type: 'varchar', length: 30, nullable: true })
+  shopPhone?: string | null;
+  // =========================================
 
   @Column({ type: 'varchar', length: 150, nullable: true })
   email?: string;
