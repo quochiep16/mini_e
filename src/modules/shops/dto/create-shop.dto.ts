@@ -1,22 +1,39 @@
-import { IsEmail, IsNotEmpty, IsString, MaxLength } from 'class-validator';
-import { Transform } from 'class-transformer';
+import {
+  IsNotEmpty, IsOptional, IsString, MaxLength, IsEmail,
+  Matches, IsLatitude, IsLongitude,
+} from 'class-validator';
 
 export class CreateShopDto {
-  @IsNotEmpty({ message: 'Name không được để trống' })
-  @IsString({ message: 'Name phải là chuỗi ký tự' })
-  @MaxLength(150, { message: 'Name tối đa 150 ký tự' })
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsNotEmpty({ message: 'Tên shop không được để trống' })
+  @MaxLength(150, { message: 'Tên shop tối đa 150 ký tự' })
   name: string;
 
-  @IsNotEmpty({ message: 'Email không được để trống' })
-  @IsEmail({}, { message: 'Email không hợp lệ' })
-  @MaxLength(150, { message: 'Email tối đa 150 ký tự' })
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
-  email: string;
+  @IsOptional()
+  @IsEmail({}, { message: 'Email liên hệ không hợp lệ' })
+  email?: string;
 
-  @IsNotEmpty({ message: 'Description không được để trống' })
-  @IsString({ message: 'Description phải là chuỗi ký tự' })
-  @MaxLength(255, { message: 'Description tối đa 255 ký tự' })
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  description: string;
+  @IsOptional()
+  @IsString({ message: 'Mô tả phải là chuỗi' })
+  @MaxLength(255, { message: 'Mô tả tối đa 255 ký tự' })
+  description?: string;
+
+  @IsOptional()
+  @MaxLength(255, { message: 'Địa chỉ tối đa 255 ký tự' })
+  shopAddress?: string;
+
+  @IsOptional()
+  @IsLatitude({ message: 'shopLat phải là vĩ độ hợp lệ [-90..90]' })
+  shopLat?: number;
+
+  @IsOptional()
+  @IsLongitude({ message: 'shopLng phải là kinh độ hợp lệ [-180..180]' })
+  shopLng?: number;
+
+  @IsOptional()
+  @MaxLength(191, { message: 'shopPlaceId tối đa 191 ký tự' })
+  shopPlaceId?: string;
+
+  @IsOptional()
+  @Matches(/^\+?[0-9]{8,15}$/, { message: 'Số điện thoại shop không hợp lệ' })
+  shopPhone?: string;
 }
