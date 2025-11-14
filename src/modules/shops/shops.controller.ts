@@ -6,63 +6,53 @@ import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { QueryShopDto } from './dto/query-shop.dto';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
-import { UserRole } from '.././users/entities/user.entity';
 
 @Controller('shops')
 export class ShopsController {
   constructor(private readonly shopsService: ShopsService) {}
 
-  /** Đăng ký shop (kiểm tra trùng tên) */
+  // Đăng ký shop (USER -> SELLER)
   @Post('register')
   async register(
-    @CurrentUser('sub') userId: number,
+    @CurrentUser() user: any,
     @Body() dto: CreateShopDto,
   ) {
-    const shop = await this.shopsService.registerForUser(userId, dto);
-    return { success: true, data: shop };
+    const data = await this.shopsService.register(user.id, dto);
+    return { success: true, data };
   }
 
-  /** (Tuỳ chọn) API check nhanh tên đã tồn tại chưa: /shops/check-name?name=... */
-  @Get('check-name')
-  async checkName(@Query('name') name: string) {
-    const exists = await this.shopsService.nameExists(String(name || '').trim());
-    return { success: true, data: { exists } };
-  }
-
-  /** Danh sách shop (public) */
+  // Danh sách shop (public) + tìm kiếm cơ bản
   @Get()
   async findAll(@Query() query: QueryShopDto) {
     const data = await this.shopsService.findAll(query);
     return { success: true, data };
   }
 
-  /** Shop của tài khoản đang đăng nhập */
+  // Shop của tài khoản hiện tại
   @Get('me')
-  async myShop(@CurrentUser('sub') userId: number) {
-    const shop = await this.shopsService.findMine(userId);
-    return { success: true, data: shop };
+  async myShop(@CurrentUser() user: any) {
+    const data = await this.shopsService.findMine(user.id);
+    return { success: true, data };
   }
 
-  /** Cập nhật shop: chỉ chủ shop hoặc ADMIN */
+  // Cập nhật shop (owner hoặc ADMIN)
   @Patch(':id')
   async update(
     @Param('id') id: string,
-    @CurrentUser('sub') userId: number,
-    @CurrentUser('role') role: UserRole,
+    @CurrentUser() user: any,
     @Body() dto: UpdateShopDto,
   ) {
-    const shop = await this.shopsService.updateShop(Number(id), userId, role, dto);
-    return { success: true, data: shop };
+    const data = await this.shopsService.update(Number(id), user.id, user.role, dto);
+    return { success: true, data };
   }
 
-  /** Xoá shop: cascade xoá products & revert role */
+  // Xoá shop (owner hoặc ADMIN) → xoá toàn bộ products + revert role USER
   @Delete(':id')
   async remove(
     @Param('id') id: string,
-    @CurrentUser('sub') userId: number,
-    @CurrentUser('role') role: UserRole,
+    @CurrentUser() user: any,
   ) {
-    const res = await this.shopsService.removeShop(Number(id), userId, role);
-    return { res };
+    await this.shopsService.remove(Number(id), user.id, user.role);
+    return { success: true };
   }
 }
