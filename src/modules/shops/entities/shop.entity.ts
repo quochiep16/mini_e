@@ -33,19 +33,27 @@ export class Shop {
   slug: string;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
-  description?: string;
+  description?: string | null;
 
   @Column({ name: 'logo_url', type: 'varchar', length: 255, nullable: true })
-  logoUrl?: string;
+  logoUrl?: string | null;
 
   @Column({ name: 'cover_url', type: 'varchar', length: 255, nullable: true })
-  coverUrl?: string;
+  coverUrl?: string | null;
 
-  // ====== ĐỊA CHỈ & LIÊN HỆ CỦA SHOP ======
+  @Column({ type: 'varchar', length: 150, nullable: true })
+  email?: string | null;
+
+  @Column({ type: 'varchar', length: 20, default: ShopStatus.PENDING })
+  status: ShopStatus;
+
+  @Column({ name: 'verified_at', type: 'datetime', nullable: true })
+  verifiedAt?: Date | null;
+
+  // ======= ĐỊA CHỈ SHOP =======
   @Column({ name: 'shop_address', type: 'varchar', length: 255, nullable: true })
   shopAddress?: string | null;
 
-  // Lưu DECIMAL để chính xác; trong code dùng string để tránh sai số
   @Column({ name: 'shop_lat', type: 'decimal', precision: 10, scale: 7, nullable: true })
   shopLat?: string | null;
 
@@ -59,16 +67,7 @@ export class Shop {
   @Index('shops_phone_idx')
   @Column({ name: 'shop_phone', type: 'varchar', length: 30, nullable: true })
   shopPhone?: string | null;
-  // =========================================
-
-  @Column({ type: 'varchar', length: 150, nullable: true })
-  email?: string;
-
-  @Column({ type: 'varchar', length: 20, default: ShopStatus.PENDING })
-  status: ShopStatus;
-
-  @Column({ name: 'verified_at', type: 'datetime', nullable: true })
-  verifiedAt?: Date;
+  // ============================
 
   @CreateDateColumn({ name: 'created_at', type: 'datetime' })
   createdAt: Date;
@@ -77,7 +76,7 @@ export class Shop {
   updatedAt: Date;
 
   @DeleteDateColumn({ name: 'deleted_at', type: 'datetime', nullable: true })
-  deletedAt?: Date;
+  deletedAt?: Date | null;
 
   @OneToOne(() => ShopStats, (s) => s.shop, { cascade: true })
   stats: ShopStats;

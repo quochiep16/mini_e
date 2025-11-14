@@ -5,8 +5,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, ILike, Repository } from 'typeorm';
 import { Shop, ShopStatus } from './entities/shop.entity';
 import { ShopStats } from './entities/shop-stats.entity';
-import { User, UserRole } from '../users/entities/user.entity';
-import { Product } from '../products/entities/product.entity';
+import { User, UserRole } from './../users/entities/user.entity';
+import { Product } from './../products/entities/product.entity';
 import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { QueryShopDto } from './dto/query-shop.dto';
@@ -46,11 +46,9 @@ export class ShopsService {
   }
 
   async register(userId: number, dto: CreateShopDto) {
-    // 1 user chỉ 1 shop
     const existedByUser = await this.shopsRepo.findOne({ where: { userId } });
     if (existedByUser) throw new ConflictException('Bạn đã có shop.');
 
-    // Tên shop duy nhất
     const existedByName = await this.shopsRepo.findOne({ where: { name: dto.name } });
     if (existedByName) throw new ConflictException('Tên shop đã tồn tại.');
 
@@ -68,7 +66,6 @@ export class ShopsService {
         description: dto.description ?? null,
         email: dto.email ?? null,
         status: ShopStatus.PENDING,
-
         shopAddress: dto.shopAddress ?? null,
         shopLat: this.toFixedOrNull(dto.shopLat),
         shopLng: this.toFixedOrNull(dto.shopLng),
@@ -78,11 +75,13 @@ export class ShopsService {
 
       const saved = await shopRepo.save(shop);
 
-      // tạo stats mặc định
-      const stats = statsRepo.create({ shopId: saved.id, productCount: 0, totalSold: 0 });
+      const stats = statsRepo.create({
+        shopId: saved.id,
+        productCount: 0,
+        totalSold: 0,
+      });
       await statsRepo.save(stats);
 
-      // nâng role USER -> SELLER
       await userRepo.update({ id: userId }, { role: UserRole.SELLER });
 
       return saved;
@@ -124,7 +123,7 @@ export class ShopsService {
       const dup = await this.shopsRepo.findOne({ where: { name: dto.name } });
       if (dup) throw new ConflictException('Tên shop đã tồn tại');
       shop.name = dto.name;
-      // Không tự đổi slug khi đổi tên để tránh vỡ link
+      // không tự đổi slug để tránh vỡ link
     }
 
     shop.email = dto.email ?? shop.email ?? null;
@@ -153,16 +152,10 @@ export class ShopsService {
       const statsRepo = trx.getRepository(ShopStats);
       const userRepo = trx.getRepository(User);
 
-      // Xoá toàn bộ products thuộc shop
       await prodRepo.delete({ shopId: shop.id });
-
-      // Xoá stats (nếu không ràng buộc cascade)
       await statsRepo.delete({ shopId: shop.id });
-
-      // Xoá shop
       await shopRepo.delete({ id: shop.id });
 
-      // Trả role về USER
       await userRepo.update({ id: shop.userId }, { role: UserRole.USER });
     });
   }
