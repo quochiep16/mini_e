@@ -1,7 +1,9 @@
 import {
   IsOptional, IsString, MaxLength, IsEmail,
   Matches, IsLatitude, IsLongitude, IsNotEmpty,
+  IsEnum,
 } from 'class-validator';
+import { ShopStatus } from '../entities/shop.entity';
 
 export class UpdateShopDto {
   @IsOptional()
@@ -37,4 +39,11 @@ export class UpdateShopDto {
   @IsOptional()
   @Matches(/^\+?[0-9]{8,15}$/, { message: 'Số điện thoại shop không hợp lệ' })
   shopPhone?: string;
+
+    // Chỉ ADMIN được phép thay đổi status (kiểm soát ở service/controller)
+  @IsOptional()
+  @IsEnum(ShopStatus, {
+    message: 'Status không hợp lệ (chỉ nhận: PENDING, ACTIVE, SUSPENDED)',
+  })
+  status?: ShopStatus;
 }

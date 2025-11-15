@@ -1,58 +1,73 @@
+// src/modules/shops/shops.controller.ts
 import {
-  Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards,
+  Body, Controller, Delete, Get, Param, Patch, Post, Query,
 } from '@nestjs/common';
 import { ShopsService } from './shops.service';
 import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { QueryShopDto } from './dto/query-shop.dto';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
+import { UserRole } from '.././users/entities/user.entity';
 
 @Controller('shops')
 export class ShopsController {
   constructor(private readonly shopsService: ShopsService) {}
 
-  // Đăng ký shop (USER -> SELLER)
+  /** Đăng ký shop (kiểm tra trùng tên) */
   @Post('register')
   async register(
-    @CurrentUser() user: any,
+    @CurrentUser('sub') userSub: number,
     @Body() dto: CreateShopDto,
   ) {
-    const data = await this.shopsService.register(user.id, dto);
-    return { success: true, data };
+    const userId = Number(userSub);
+    const shop = await this.shopsService.registerForUser(userId, dto);
+    return { success: true, data: shop };
   }
 
-  // Danh sách shop (public) + tìm kiếm cơ bản
+  /** (Tuỳ chọn) API check nhanh tên đã tồn tại chưa: /shops/check-name?name=... */
+  @Get('check-name')
+  async checkName(@Query('name') name: string) {
+    const exists = await this.shopsService.nameExists(String(name || '').trim());
+    return { success: true, data: { exists } };
+  }
+
+  /** Danh sách shop (public) */
   @Get()
   async findAll(@Query() query: QueryShopDto) {
     const data = await this.shopsService.findAll(query);
     return { success: true, data };
   }
 
-  // Shop của tài khoản hiện tại
+  /** Shop của tài khoản đang đăng nhập */
   @Get('me')
-  async myShop(@CurrentUser() user: any) {
-    const data = await this.shopsService.findMine(user.id);
-    return { success: true, data };
+  async myShop(@CurrentUser('sub') userSub: number) {
+    const userId = Number(userSub);
+    const shop = await this.shopsService.findMine(userId);
+    return { success: true, data: shop };
   }
 
-  // Cập nhật shop (owner hoặc ADMIN)
+  /** Cập nhật shop: chỉ chủ shop hoặc ADMIN */
   @Patch(':id')
   async update(
     @Param('id') id: string,
-    @CurrentUser() user: any,
+    @CurrentUser('sub') userSub: number,
+    @CurrentUser('role') role: UserRole,
     @Body() dto: UpdateShopDto,
   ) {
-    const data = await this.shopsService.update(Number(id), user.id, user.role, dto);
-    return { success: true, data };
+    const userId = Number(userSub);
+    const shop = await this.shopsService.updateShop(Number(id), userId, role, dto);
+    return { success: true, data: shop };
   }
 
-  // Xoá shop (owner hoặc ADMIN) → xoá toàn bộ products + revert role USER
+  /** Xoá shop: cascade xoá products & revert role */
   @Delete(':id')
   async remove(
     @Param('id') id: string,
-    @CurrentUser() user: any,
+    @CurrentUser('sub') userSub: number,
+    @CurrentUser('role') role: UserRole,
   ) {
-    await this.shopsService.remove(Number(id), user.id, user.role);
+    const userId = Number(userSub);
+    await this.shopsService.removeShop(Number(id), userId, role);
     return { success: true };
   }
 }
