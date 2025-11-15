@@ -115,19 +115,31 @@ export class ShopsService {
   }
 
   /** Lấy danh sách shop (phân trang + lọc) */
-  async findAll(query: QueryShopDto) {
-    const { q, status, page = 1, limit = 10 } = query;
-    const where: any = {};
-    if (q) where.name = ILike(`%${q}%`);
-    if (status) where.status = status;
-    const [items, total] = await this.shopsRepo.findAndCount({
-      where,
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
-    return { items, page, limit, total };
-  }
+async findAll(query: QueryShopDto) {
+  const { q, status, page = 1, limit = 10 } = query;
+
+  // MySQL mặc định so sánh không phân biệt hoa/thường theo collation → Like là đủ.
+  const LikeInsensitive = (s: string) => ILike(`%${s}%`);
+
+  // Nếu có q → OR theo nhiều cột, đồng thời giữ status (AND).
+  const where = q
+    ? [
+        { name: LikeInsensitive(q),        ...(status ? { status } : {}) },
+        { email: LikeInsensitive(q),       ...(status ? { status } : {}) },
+        { shopAddress: LikeInsensitive(q), ...(status ? { status } : {}) },
+        { shopPhone: LikeInsensitive(q),   ...(status ? { status } : {}) },
+      ]
+    : (status ? { status } : {});
+
+  const [items, total] = await this.shopsRepo.findAndCount({
+    where,
+    order: { createdAt: 'DESC' },
+    skip: (page - 1) * limit,
+    take: limit,
+  });
+
+  return { items, page, limit, total };
+}
 
   /** Lấy shop của tài khoản đang login */
   async findMine(userId: number) {
