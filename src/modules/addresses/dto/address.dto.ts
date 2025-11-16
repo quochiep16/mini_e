@@ -9,7 +9,7 @@ import {
 
 export class CreateAddressDto {
   @IsString()
-  @Length(1, 120, { message: 'Họ tên tối đa 120 ký tự' })
+  @Length(1, 1200, { message: 'Họ tên tối đa 120 ký tự' })
   fullName: string;
 
   @IsString()

@@ -21,7 +21,7 @@ export class InitShops1700000001000 implements MigrationInterface {
         \`updated_at\` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
         \`deleted_at\` DATETIME(6) NULL,
         CONSTRAINT \`PK_shops_id\` PRIMARY KEY (\`id\`),
-        CONSTRAINT \`FK_shops_user\` FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON DELETE RESTRICT ON UPDATE CASCADE
+        CONSTRAINT \`FK_shops_user\` FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON DELETE CASCADE ON UPDATE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
