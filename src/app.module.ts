@@ -19,6 +19,7 @@ import { ActiveUserGuard } from './common/guards/active-user.guard';
 import { User } from './modules/users/entities/user.entity';
 import { CartModule } from './modules/cart/cart.module';
 import { AddressesModule } from './modules/addresses/addresses.module';
+import { OrdersModule } from './modules/orders/orders.module';
 
 
 @Module({
@@ -56,6 +57,7 @@ import { AddressesModule } from './modules/addresses/addresses.module';
     ScheduleModule.forRoot(),
     CartModule,
     AddressesModule,
+    OrdersModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AccessTokenGuard }, // yêu cầu JWT mặc định

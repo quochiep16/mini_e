@@ -220,4 +220,21 @@ export class CartService {
     await this.recalcTotals(cart.id);
     return this.getCart(userId);
   }
+
+  async removeMany(userId: number, itemIds: number[]): Promise<void> {
+    if (!itemIds?.length) return;
+
+    // lấy cart của user
+    const cart = await this.cartRepo.findOne({ where: { userId } });
+    if (!cart) return;
+
+    // Xoá bằng query builder để tránh lỗi type TS khi dùng In(...)
+    await this.itemRepo
+      .createQueryBuilder()
+      .delete()
+      .from(CartItem)
+      .where('cart_id = :cid', { cid: cart.id })
+      .andWhere('id IN (:...ids)', { ids: itemIds })
+      .execute();
+   }
 }
