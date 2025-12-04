@@ -40,6 +40,7 @@ export class OrdersService {
     const d = new Date().toISOString().slice(0,10).replace(/-/g,'');
     return `PM${d}-${n}`;
   }
+
   private pickItems(cart: any, itemIds?: number[]) {
     if (!itemIds?.length) return cart.items;
     const set = new Set(itemIds.map(Number));
@@ -47,6 +48,7 @@ export class OrdersService {
     if (selected.length !== set.size) throw new BadRequestException('Một số cart item không tồn tại');
     return selected;
   }
+
   private async getAddress(userId: number, addressId?: number) {
     const addr = addressId
       ? await this.addrRepo.findOne({ where: { id: addressId, userId } })
@@ -55,7 +57,9 @@ export class OrdersService {
     if (!addr.lat || !addr.lng) throw new BadRequestException('Địa chỉ chưa có toạ độ');
     return addr;
   }
-  private async groupByShop(selected: any[]) {
+
+  /** Nhóm theo productId (mỗi product => 1 order) */
+  private async groupByProduct(selected: any[]) {
     const productIds = Array.from(new Set(selected.map((i: any) => i.productId)));
     const prods = await this.productRepo.find({ where: { id: In(productIds) } as any });
     const prodMap = new Map(prods.map(p => [p.id, p]));
@@ -63,11 +67,10 @@ export class OrdersService {
     for (const it of selected) {
       const p = prodMap.get(it.productId);
       if (!p) throw new BadRequestException('Sản phẩm không tồn tại');
-      const sid = p.shopId;
-      if (!groups.has(sid)) groups.set(sid, []);
-      (groups.get(sid) as any[]).push({ ...it, _prod: p });
+      if (!groups.has(p.id)) groups.set(p.id, []);
+      (groups.get(p.id) as any[]).push({ ...it, _prod: p });
     }
-    return { groups };
+    return { groups, prodMap };
   }
 
   async preview(userId: number, dto: PreviewOrderDto) {
@@ -77,15 +80,19 @@ export class OrdersService {
     if (!selected.length) throw new BadRequestException('Chưa chọn sản phẩm nào');
 
     const addr = await this.getAddress(userId, dto.addressId);
-    const { groups } = await this.groupByShop(selected);
+    const { groups, prodMap } = await this.groupByProduct(selected);
 
-    const resultGroups: any[] = [];
+    const imageIds = Array.from(new Set(selected.map((i: any) => i.imageId).filter(Boolean)));
+    const images = imageIds.length ? await this.imageRepo.find({ where: { id: In(imageIds) } as any }) : [];
+    const imgMap = new Map(images.map(im => [im.id, im.url]));
+
+    const resultOrders: any[] = [];
     let sumSubtotal = 0, sumShipping = 0;
 
-    for (const [shopId, items] of groups.entries()) {
-      const shop = await this.shopRepo.findOne({ where: { id: shopId } as any });
+    for (const [productId, items] of groups.entries()) {
+      const p = prodMap.get(productId)!;
+      const shop = await this.shopRepo.findOne({ where: { id: p.shopId } as any });
       if (!shop) throw new BadRequestException('Shop không tồn tại');
-
       const shopLat = +(shop as any).shopLat;
       const shopLng = +(shop as any).shopLng;
       if (isNaN(shopLat) || isNaN(shopLng)) throw new BadRequestException('Shop chưa cấu hình tọa độ');
@@ -95,20 +102,31 @@ export class OrdersService {
       const shippingFee = calcShippingFee(distanceKm, subtotal);
       const total = subtotal + shippingFee;
 
-      resultGroups.push({
-        shop: { id: shop.id, name: (shop as any).name },
-        items,
+      resultOrders.push({
+        product: { id: p.id, title: (p as any).title },
+        items: items.map((i: any) => ({
+          id: i.id,
+          variantId: i.variantId ?? null,
+          name: i.variantName ? `${i.title} - ${i.variantName}` : i.title,
+          imageUrl: i.imageId ? (imgMap.get(i.imageId) ?? null) : null,
+          price: +Number(i.price).toFixed(2),
+          quantity: i.quantity,
+          totalLine: +Number(Number(i.price) * i.quantity).toFixed(2),
+          value1: i.value1 ?? null, value2: i.value2 ?? null, value3: i.value3 ?? null, value4: i.value4 ?? null, value5: i.value5 ?? null,
+        })),
         distanceKm: +distanceKm.toFixed(2),
         subtotal: +subtotal.toFixed(2),
         shippingFee,
         total: +total.toFixed(2),
       });
-      sumSubtotal += subtotal; sumShipping += shippingFee;
+
+      sumSubtotal += subtotal;
+      sumShipping += shippingFee;
     }
 
     return {
       address: { id: addr.id, fullName: addr.fullName, phone: addr.phone, formattedAddress: addr.formattedAddress },
-      groups: resultGroups,
+      orders: resultOrders,
       summary: {
         subtotal: +sumSubtotal.toFixed(2),
         shippingFee: sumShipping,
@@ -124,7 +142,7 @@ export class OrdersService {
     if (!selected.length) throw new BadRequestException('Chưa chọn sản phẩm nào');
 
     const addr = await this.getAddress(userId, dto.addressId);
-    const { groups } = await this.groupByShop(selected);
+    const { groups, prodMap } = await this.groupByProduct(selected);
 
     const imageIds = Array.from(new Set(selected.map((i: any) => i.imageId).filter(Boolean)));
     const images = imageIds.length ? await this.imageRepo.find({ where: { id: In(imageIds) } as any }) : [];
@@ -139,21 +157,17 @@ export class OrdersService {
       const productRepo = trx.getRepository(Product);
       const variantRepo = trx.getRepository(ProductVariant);
 
-      for (const [shopId, items] of groups.entries()) {
-        const shop = await this.shopRepo.findOne({ where: { id: shopId } as any });
+      for (const [productId, items] of groups.entries()) {
+        const p = prodMap.get(productId)!;
+        const shop = await this.shopRepo.findOne({ where: { id: p.shopId } as any });
         const shopLat = +(shop as any).shopLat;
         const shopLng = +(shop as any).shopLng;
 
-        // check stock
-        const pIds = Array.from(new Set(items.map((i: any) => i.productId)));
+        // check tồn kho
         const vIds = Array.from(new Set(items.map((i: any) => i.variantId).filter(Boolean)));
-        const prods = await productRepo.find({ where: { id: In(pIds) } as any });
         const vars = vIds.length ? await variantRepo.find({ where: { id: In(vIds) } as any }) : [];
-        const prodMap = new Map(prods.map(p => [p.id, p]));
         const varMap = new Map(vars.map(v => [v.id, v]));
         for (const it of items) {
-          const p = prodMap.get(it.productId);
-          if (!p) throw new BadRequestException('Sản phẩm không tồn tại');
           if (it.variantId) {
             const v = varMap.get(it.variantId);
             if (!v) throw new BadRequestException('Biến thể không tồn tại');
@@ -163,13 +177,12 @@ export class OrdersService {
           }
         }
 
-        // totals group
         const subtotalNum = items.reduce((s: number, i: any) => s + Number(i.price) * i.quantity, 0);
         const distanceKm = haversineKm(shopLat, shopLng, +addr.lat!, +addr.lng!);
         const shippingFeeNum = calcShippingFee(distanceKm, subtotalNum);
         const totalNum = subtotalNum + shippingFeeNum;
 
-        // create order
+        // tạo order
         let code = this.genOrderCode();
         for (let i=0;i<5;i++) {
           const existed = await orderRepo.findOne({ where: { code } });
@@ -195,14 +208,14 @@ export class OrdersService {
         });
         const savedOrder = await orderRepo.save(order);
 
-        // items + decrement stock
+        // items + trừ tồn
         for (const it of items) {
           const nameSnapshot = it.variantName ? `${it.title} - ${it.variantName}` : it.title;
           const imageSnapshot = it.imageId ? (imgMap.get(it.imageId) ?? null) : null;
           const totalLine = Number(it.price) * it.quantity;
           await itemRepo.save(itemRepo.create({
             orderId: savedOrder.id,
-            productId: it.productId,
+            productId: p.id,
             productVariantId: it.variantId ?? null,
             nameSnapshot, imageSnapshot,
             price: Number(it.price).toFixed(2),
@@ -211,7 +224,7 @@ export class OrdersService {
             value1: it.value1 ?? null, value2: it.value2 ?? null, value3: it.value3 ?? null, value4: it.value4 ?? null, value5: it.value5 ?? null,
           }));
           if (it.variantId) await variantRepo.decrement({ id: it.variantId }, 'stock', it.quantity);
-          else await productRepo.decrement({ id: it.productId }, 'stock', it.quantity);
+          else await productRepo.decrement({ id: p.id }, 'stock', it.quantity);
         }
 
         createdOrders.push({ orderId: savedOrder.id, code: savedOrder.code, total: +totalNum.toFixed(2) });
@@ -219,15 +232,15 @@ export class OrdersService {
       }
     });
 
-    // remove selected items from cart
+    // xoá item đã đặt khỏi cart
     await this.cartService.removeMany(userId, selected.map((i: any) => i.id));
 
-    // COD: return orders only
+    // COD
     if (dto.paymentMethod === PaymentMethod.COD) {
       return { orders: createdOrders };
     }
 
-    // VNPay: one session + one link
+    // VNPay: 1 session + 1 link + QR
     let sessionCode = this.genSessionCode();
     for (let i=0;i<5;i++) {
       const existed = await this.sessionRepo.findOne({ where: { code: sessionCode } });
@@ -245,10 +258,13 @@ export class OrdersService {
     const savedSession = await this.sessionRepo.save(session);
 
     const paymentUrl = this.pg.createVnPayUrl({ code: savedSession.code, amount: totalAmount, ipAddress });
+    const paymentQr = await this.pg.urlToQrDataUrl(paymentUrl);
 
     return {
       session: { code: savedSession.code, amount: +totalAmount.toFixed(2), status: savedSession.status },
       paymentUrl,
+      paymentQr, // data:image/png;base64,...
+      qrInfo: { provider: 'VNPAY', code: savedSession.code, amount: +totalAmount.toFixed(2), currency: 'VND' },
       orders: createdOrders,
     };
   }

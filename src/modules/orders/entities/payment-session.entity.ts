@@ -10,8 +10,7 @@ export class PaymentSession {
 
   @Column({ type: 'int', name: 'user_id' }) userId: number;
 
-  // chỉ VNPay
-  @Column({ type: 'varchar', length: 32 }) code: string; // dùng làm vnp_TxnRef
+  @Column({ type: 'varchar', length: 32 }) code: string; // vnp_TxnRef
 
   @Column({ type: 'decimal', precision: 12, scale: 2 }) amount: string;
   @Column({ type: 'varchar', length: 6, default: 'VND' }) currency: string;

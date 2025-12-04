@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 import * as qs from 'querystring';
+import * as QRCode from 'qrcode';
 
 @Injectable()
 export class PaymentGatewayService {
@@ -19,7 +20,7 @@ export class PaymentGatewayService {
       vnp_TxnRef: params.code,
       vnp_OrderInfo: `Thanh toan don hang ${params.code}`,
       vnp_OrderType: 'other',
-      vnp_Amount: Math.round(params.amount * 100), // bắt buộc x100
+      vnp_Amount: Math.round(params.amount * 100),
       vnp_ReturnUrl: vnp.returnUrl,
       vnp_IpAddr: params.ipAddress || '127.0.0.1',
       vnp_CreateDate: createDate,
@@ -32,6 +33,10 @@ export class PaymentGatewayService {
 
     const query = qs.stringify(vnpParams, undefined, undefined, { encodeURIComponent });
     return `${vnp.endpoint}?${query}`;
+  }
+
+  async urlToQrDataUrl(url: string): Promise<string> {
+    return QRCode.toDataURL(url, { errorCorrectionLevel: 'M', margin: 1, scale: 6 });
   }
 
   verifyVnPayReturn(queryParams: any) {
