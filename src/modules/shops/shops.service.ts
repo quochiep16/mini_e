@@ -1,5 +1,8 @@
 import {
-  ConflictException, ForbiddenException, Injectable, NotFoundException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, ILike, Not, Repository } from 'typeorm';
@@ -8,7 +11,7 @@ import { ShopStats } from './entities/shop-stats.entity';
 import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { QueryShopDto } from './dto/query-shop.dto';
-import { User, UserRole } from '.././users/entities/user.entity';
+import { User, UserRole } from './../users/entities/user.entity';
 
 @Injectable()
 export class ShopsService {
@@ -77,9 +80,9 @@ export class ShopsService {
     const slug = await this.ensureUniqueSlug(dto.name);
 
     return this.dataSource.transaction(async (trx) => {
-      const shopRepo  = trx.getRepository(Shop);
+      const shopRepo = trx.getRepository(Shop);
       const statsRepo = trx.getRepository(ShopStats);
-      const userRepo  = trx.getRepository(User);
+      const userRepo = trx.getRepository(User);
 
       const shop = shopRepo.create({
         userId,
@@ -91,7 +94,7 @@ export class ShopsService {
 
         // ---- address fields ----
         shopAddress: dto.shopAddress,
-        shopLat: this.toFixedOrNull(dto.shopLat),   // DECIMAL -> string
+        shopLat: this.toFixedOrNull(dto.shopLat), // DECIMAL -> string
         shopLng: this.toFixedOrNull(dto.shopLng),
         shopPlaceId: dto.shopPlaceId,
         shopPhone: dto.shopPhone,
@@ -102,6 +105,7 @@ export class ShopsService {
         shopId: shop.id,
         productCount: 0,
         totalSold: 0,
+        // totalRevenue & totalOrders dùng default 0 trong DB
       });
       await statsRepo.save(stats);
 
@@ -110,43 +114,107 @@ export class ShopsService {
         await userRepo.save(user);
       }
 
-      return { ...shop, stats };
+      const productCount = stats.productCount ?? 0;
+      const totalRevenue = Number(stats.totalRevenue ?? 0);
+      const totalOrders = stats.totalOrders ?? 0;
+      const totalSold = stats.totalSold ?? 0;
+
+      return {
+        ...shop,
+        stats,
+        productCount,
+        totalRevenue,
+        totalOrders,
+        totalSold,
+      };
     });
   }
 
-  /** Lấy danh sách shop (phân trang + lọc) */
-async findAll(query: QueryShopDto) {
-  const { q, status, page = 1, limit = 10 } = query;
+  /** Lấy danh sách shop (phân trang + lọc) + kèm stats */
+  async findAll(query: QueryShopDto) {
+    const { q, status, page = 1, limit = 10 } = query;
 
-  // MySQL mặc định so sánh không phân biệt hoa/thường theo collation → Like là đủ.
-  const LikeInsensitive = (s: string) => ILike(`%${s}%`);
+    // MySQL mặc định so sánh không phân biệt hoa/thường theo collation → Like là đủ.
+    const LikeInsensitive = (s: string) => ILike(`%${s}%`);
 
-  // Nếu có q → OR theo nhiều cột, đồng thời giữ status (AND).
-  const where = q
-    ? [
-        { name: LikeInsensitive(q),        ...(status ? { status } : {}) },
-        { email: LikeInsensitive(q),       ...(status ? { status } : {}) },
-        { shopAddress: LikeInsensitive(q), ...(status ? { status } : {}) },
-        { shopPhone: LikeInsensitive(q),   ...(status ? { status } : {}) },
-      ]
-    : (status ? { status } : {});
+    // Nếu có q → OR theo nhiều cột, đồng thời giữ status (AND).
+    const where = q
+      ? [
+          { name: LikeInsensitive(q),        ...(status ? { status } : {}) },
+          { email: LikeInsensitive(q),       ...(status ? { status } : {}) },
+          { shopAddress: LikeInsensitive(q), ...(status ? { status } : {}) },
+          { shopPhone: LikeInsensitive(q),   ...(status ? { status } : {}) },
+        ]
+      : (status ? { status } : {});
 
-  const [items, total] = await this.shopsRepo.findAndCount({
-    where,
-    order: { createdAt: 'DESC' },
-    skip: (page - 1) * limit,
-    take: limit,
-  });
+    const [items, total] = await this.shopsRepo.findAndCount({
+      where,
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+      relations: { stats: true },
+    });
 
-  return { items, page, limit, total };
-}
+    const mapped = items.map((shop) => {
+      const stats = shop.stats;
+      const { stats: _ignored, ...plainShop } = shop as any;
 
-  /** Lấy shop của tài khoản đang login */
+      const productCount = stats?.productCount ?? 0;
+      const totalRevenue = Number(stats?.totalRevenue ?? 0);
+      const totalOrders = stats?.totalOrders ?? 0;
+      const totalSold = stats?.totalSold ?? 0;
+
+      return {
+        ...plainShop,
+        stats,
+        productCount,
+        totalRevenue,
+        totalOrders,
+        totalSold,
+      };
+    });
+
+    return { items: mapped, page, limit, total };
+  }
+
+  /** Lấy shop của tài khoản đang login (kèm thống kê) */
   async findMine(userId: number) {
     if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
-    const shop = await this.shopsRepo.findOne({ where: { userId } });
+
+    const shop = await this.shopsRepo.findOne({
+      where: { userId },
+      relations: { stats: true },
+    });
     if (!shop) throw new NotFoundException('Bạn chưa có shop.');
-    return shop;
+
+    // Nếu vì lý do gì đó chưa có stats thì tạo mặc định
+    if (!shop.stats) {
+      const stats = this.statsRepo.create({
+        shopId: shop.id,
+        productCount: 0,
+        totalSold: 0,
+        totalRevenue: 0,
+        totalOrders: 0,
+      });
+      shop.stats = await this.statsRepo.save(stats);
+    }
+
+    const stats = shop.stats;
+    const { stats: _ignored, ...plainShop } = shop as any;
+
+    const productCount = stats?.productCount ?? 0;
+    const totalRevenue = Number(stats?.totalRevenue ?? 0);
+    const totalOrders = stats?.totalOrders ?? 0;
+    const totalSold = stats?.totalSold ?? 0;
+
+    return {
+      ...plainShop,
+      stats,
+      productCount,
+      totalRevenue,
+      totalOrders,
+      totalSold,
+    };
   }
 
   /** Cập nhật shop: chỉ chủ shop hoặc ADMIN */
@@ -173,11 +241,11 @@ async findAll(query: QueryShopDto) {
     if (dto.description !== undefined) shop.description = dto.description;
 
     // ---- address fields ----
-    if (dto.shopAddress !== undefined)  shop.shopAddress  = dto.shopAddress;
-    if (dto.shopLat !== undefined)      shop.shopLat      = this.toFixedOrNull(dto.shopLat);
-    if (dto.shopLng !== undefined)      shop.shopLng      = this.toFixedOrNull(dto.shopLng);
-    if (dto.shopPlaceId !== undefined)  shop.shopPlaceId  = dto.shopPlaceId;
-    if (dto.shopPhone !== undefined)    shop.shopPhone    = dto.shopPhone;
+    if (dto.shopAddress !== undefined) shop.shopAddress = dto.shopAddress;
+    if (dto.shopLat !== undefined)     shop.shopLat     = this.toFixedOrNull(dto.shopLat);
+    if (dto.shopLng !== undefined)     shop.shopLng     = this.toFixedOrNull(dto.shopLng);
+    if (dto.shopPlaceId !== undefined) shop.shopPlaceId = dto.shopPlaceId;
+    if (dto.shopPhone !== undefined)   shop.shopPhone   = dto.shopPhone;
 
     // Chỉ ADMIN được đổi status
     if (dto.status !== undefined) {
@@ -186,7 +254,22 @@ async findAll(query: QueryShopDto) {
     }
 
     await this.shopsRepo.save(shop);
-    return shop;
+
+    const stats = await this.statsRepo.findOne({ where: { shopId: shop.id } });
+
+    const productCount = stats?.productCount ?? 0;
+    const totalRevenue = Number(stats?.totalRevenue ?? 0);
+    const totalOrders = stats?.totalOrders ?? 0;
+    const totalSold = stats?.totalSold ?? 0;
+
+    return {
+      ...shop,
+      stats,
+      productCount,
+      totalRevenue,
+      totalOrders,
+      totalSold,
+    };
   }
 
   /** Xóa shop (hard delete) -> CASCADE xóa products/images/variants, đổi role SELLER -> USER */

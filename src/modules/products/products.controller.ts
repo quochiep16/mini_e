@@ -24,6 +24,8 @@ import type { Request } from 'express';
 import { Express } from 'express';
 import { v2 as cloudinary } from 'cloudinary';
 
+import { Public } from '../../common/decorators/public.decorator';
+
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { GenerateVariantsDto } from './dto/generate-variants.dto';
@@ -68,6 +70,7 @@ export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
   // ===== public list/detail =====
+  @Public()
   @Get()
   async list(@Query('page') page = '1', @Query('limit') limit = '20') {
     const data = await this.productsService.findAllBasic(Number(page), Number(limit));
