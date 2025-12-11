@@ -6,12 +6,13 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, ILike, Not, Repository } from 'typeorm';
+
 import { Shop, ShopStatus } from './entities/shop.entity';
 import { ShopStats } from './entities/shop-stats.entity';
 import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { QueryShopDto } from './dto/query-shop.dto';
-import { User, UserRole } from './../users/entities/user.entity';
+import { User, UserRole } from '../../modules/users/entities/user.entity';
 
 @Injectable()
 export class ShopsService {
@@ -65,11 +66,9 @@ export class ShopsService {
   async registerForUser(userId: number, dto: CreateShopDto) {
     if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
 
-    // 1 user chỉ có 1 shop
     const existed = await this.shopsRepo.findOne({ where: { userId } });
     if (existed) throw new ConflictException('Bạn đã có shop.');
 
-    // kiểm tra trùng tên
     if (await this.nameExists(dto.name)) {
       throw new ConflictException('Tên shop đã tồn tại.');
     }
@@ -91,10 +90,9 @@ export class ShopsService {
         description: dto.description,
         slug,
         status: ShopStatus.PENDING,
-
         // ---- address fields ----
         shopAddress: dto.shopAddress,
-        shopLat: this.toFixedOrNull(dto.shopLat), // DECIMAL -> string
+        shopLat: this.toFixedOrNull(dto.shopLat),
         shopLng: this.toFixedOrNull(dto.shopLng),
         shopPlaceId: dto.shopPlaceId,
         shopPhone: dto.shopPhone,
@@ -105,7 +103,6 @@ export class ShopsService {
         shopId: shop.id,
         productCount: 0,
         totalSold: 0,
-        // totalRevenue & totalOrders dùng default 0 trong DB
       });
       await statsRepo.save(stats);
 
@@ -130,14 +127,12 @@ export class ShopsService {
     });
   }
 
-  /** Lấy danh sách shop (phân trang + lọc) + kèm stats */
+  /** Danh sách shop (phân trang + search) + kèm stats */
   async findAll(query: QueryShopDto) {
-    const { q, status, page = 1, limit = 10 } = query;
+    const { q, status, page = 1, limit = 20 } = query;
 
-    // MySQL mặc định so sánh không phân biệt hoa/thường theo collation → Like là đủ.
     const LikeInsensitive = (s: string) => ILike(`%${s}%`);
 
-    // Nếu có q → OR theo nhiều cột, đồng thời giữ status (AND).
     const where = q
       ? [
           { name: LikeInsensitive(q),        ...(status ? { status } : {}) },
@@ -177,7 +172,7 @@ export class ShopsService {
     return { items: mapped, page, limit, total };
   }
 
-  /** Lấy shop của tài khoản đang login (kèm thống kê) */
+  /** Shop của tài khoản đang login (kèm thống kê) */
   async findMine(userId: number) {
     if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
 
@@ -187,7 +182,6 @@ export class ShopsService {
     });
     if (!shop) throw new NotFoundException('Bạn chưa có shop.');
 
-    // Nếu vì lý do gì đó chưa có stats thì tạo mặc định
     if (!shop.stats) {
       const stats = this.statsRepo.create({
         shopId: shop.id,
@@ -198,6 +192,32 @@ export class ShopsService {
       });
       shop.stats = await this.statsRepo.save(stats);
     }
+
+    const stats = shop.stats;
+    const { stats: _ignored, ...plainShop } = shop as any;
+
+    const productCount = stats?.productCount ?? 0;
+    const totalRevenue = Number(stats?.totalRevenue ?? 0);
+    const totalOrders = stats?.totalOrders ?? 0;
+    const totalSold = stats?.totalSold ?? 0;
+
+    return {
+      ...plainShop,
+      stats,
+      productCount,
+      totalRevenue,
+      totalOrders,
+      totalSold,
+    };
+  }
+
+  /** Lấy 1 shop theo id (kèm stats) */
+  async findOne(id: number) {
+    const shop = await this.shopsRepo.findOne({
+      where: { id },
+      relations: { stats: true },
+    });
+    if (!shop) throw new NotFoundException('Không tìm thấy shop.');
 
     const stats = shop.stats;
     const { stats: _ignored, ...plainShop } = shop as any;
@@ -228,7 +248,6 @@ export class ShopsService {
       throw new ForbiddenException('Bạn không có quyền chỉnh sửa shop này.');
     }
 
-    // Đổi name -> check trùng + cập nhật slug duy nhất
     if (dto.name && dto.name.trim() && dto.name.trim() !== shop.name) {
       if (await this.nameExists(dto.name, id)) {
         throw new ConflictException('Tên shop đã tồn tại.');
@@ -240,14 +259,12 @@ export class ShopsService {
     if (dto.email !== undefined)       shop.email = dto.email;
     if (dto.description !== undefined) shop.description = dto.description;
 
-    // ---- address fields ----
     if (dto.shopAddress !== undefined) shop.shopAddress = dto.shopAddress;
     if (dto.shopLat !== undefined)     shop.shopLat     = this.toFixedOrNull(dto.shopLat);
     if (dto.shopLng !== undefined)     shop.shopLng     = this.toFixedOrNull(dto.shopLng);
     if (dto.shopPlaceId !== undefined) shop.shopPlaceId = dto.shopPlaceId;
     if (dto.shopPhone !== undefined)   shop.shopPhone   = dto.shopPhone;
 
-    // Chỉ ADMIN được đổi status
     if (dto.status !== undefined) {
       if (!isAdmin) throw new ForbiddenException('Chỉ ADMIN được đổi trạng thái shop.');
       shop.status = dto.status;
@@ -287,10 +304,8 @@ export class ShopsService {
       const shopRepo = trx.getRepository(Shop);
       const userRepo = trx.getRepository(User);
 
-      // Hard delete shop → FK CASCADE sẽ xóa toàn bộ products/images/variants & shop_stats
       await shopRepo.delete({ id });
 
-      // Đổi role của chủ shop về USER nếu đang là SELLER
       const owner = await userRepo.findOne({ where: { id: shop.userId } });
       if (owner && owner.role === UserRole.SELLER) {
         owner.role = UserRole.USER;
@@ -299,5 +314,63 @@ export class ShopsService {
     });
 
     return { success: true };
+  }
+
+  /** Chỉ cập nhật URL logo (đã được upload ở controller) */
+  async updateLogoUrl(userId: number, logoUrl: string) {
+    if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
+
+    const shop = await this.shopsRepo.findOne({
+      where: { userId },
+      relations: { stats: true },
+    });
+    if (!shop) throw new NotFoundException('Bạn chưa có shop.');
+
+    shop.logoUrl = logoUrl;
+    await this.shopsRepo.save(shop);
+
+    const stats = shop.stats;
+    const productCount = stats?.productCount ?? 0;
+    const totalRevenue = Number(stats?.totalRevenue ?? 0);
+    const totalOrders = stats?.totalOrders ?? 0;
+    const totalSold = stats?.totalSold ?? 0;
+
+    return {
+      ...shop,
+      stats,
+      productCount,
+      totalRevenue,
+      totalOrders,
+      totalSold,
+    };
+  }
+
+  /** Chỉ cập nhật URL cover (đã được upload ở controller) */
+  async updateCoverUrl(userId: number, coverUrl: string) {
+    if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
+
+    const shop = await this.shopsRepo.findOne({
+      where: { userId },
+      relations: { stats: true },
+    });
+    if (!shop) throw new NotFoundException('Bạn chưa có shop.');
+
+    shop.coverUrl = coverUrl;
+    await this.shopsRepo.save(shop);
+
+    const stats = shop.stats;
+    const productCount = stats?.productCount ?? 0;
+    const totalRevenue = Number(stats?.totalRevenue ?? 0);
+    const totalOrders = stats?.totalOrders ?? 0;
+    const totalSold = stats?.totalSold ?? 0;
+
+    return {
+      ...shop,
+      stats,
+      productCount,
+      totalRevenue,
+      totalOrders,
+      totalSold,
+    };
   }
 }

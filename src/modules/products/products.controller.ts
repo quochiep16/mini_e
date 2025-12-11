@@ -94,7 +94,6 @@ export class ProductsController {
   }
 
   @Post()
-  @UseGuards(AccessTokenGuard)
   @UseInterceptors(FilesInterceptor('images', 10, uploadOptions))
   async create(
     @CurrentUser('sub') userId: number,
@@ -130,7 +129,6 @@ export class ProductsController {
   }
 
   @Patch(':id')
-  @UseGuards(AccessTokenGuard)
   async updateProduct(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser('sub') userId: number,
@@ -142,7 +140,6 @@ export class ProductsController {
   }
 
   @Delete(':id')
-  @UseGuards(AccessTokenGuard)
   async removeProduct(
     @Param('id') id: string,
     @CurrentUser('sub') userId: number,
@@ -153,7 +150,6 @@ export class ProductsController {
   }
 
   @Post(':id/variants/generate')
-  @UseGuards(AccessTokenGuard)
   async generateVariants(
     @Param('id') id: string,
     @CurrentUser('sub') userId: number,
@@ -165,7 +161,6 @@ export class ProductsController {
   }
 
   @Get(':id/variants')
-  @UseGuards(AccessTokenGuard)
   async listVariants(
     @Param('id') id: string,
     @CurrentUser('sub') userId: number,
@@ -176,7 +171,6 @@ export class ProductsController {
   }
 
   @Patch(':productId/variants/:variantId')
-  @UseGuards(AccessTokenGuard)
   async updateVariant(
     @Param('productId') productId: string,
     @Param('variantId') variantId: string,
