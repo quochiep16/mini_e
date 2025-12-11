@@ -20,7 +20,8 @@ import { extname, join } from 'path';
 import * as fs from 'fs';
 import { randomBytes } from 'crypto';
 import type { Express } from 'express';
-import { cloudinary } from '../../config/cloudinary.config';
+
+import { cloudinary } from '../../config/cloudinary.config'; // ✅ dùng config chung
 
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -30,7 +31,7 @@ import { ShopsService } from './shops.service';
 import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { QueryShopDto } from './dto/query-shop.dto';
-import { UserRole } from '../../modules/users/entities/user.entity';
+import { UserRole } from '../users/entities/user.entity';
 
 // ==== cấu hình upload 1 ảnh cho shop (lưu tạm vào uploads/shops) ====
 const shopUploadOptions: MulterOptions = {
@@ -69,7 +70,7 @@ export class ShopsController {
     return { success: true, data: shop };
   }
 
-  /** API check nhanh tên đã tồn tại chưa: /shops/check-name?name=... */
+  /** API check nhanh tên đã tồn tại chưa: /shops/check-name?name=. */
   @Public()
   @Get('check-name')
   async checkName(@Query('name') name: string) {

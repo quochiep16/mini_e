@@ -22,7 +22,7 @@ import * as fs from 'fs';
 import { randomBytes } from 'crypto';
 import type { Request } from 'express';
 import { Express } from 'express';
-import { v2 as cloudinary } from 'cloudinary';
+import { cloudinary } from '../../config/cloudinary.config';
 
 import { Public } from '../../common/decorators/public.decorator';
 
@@ -57,13 +57,6 @@ const uploadOptions: MulterOptions = {
   },
   limits: { fileSize: 5 * 1024 * 1024, files: 10 },
 };
-
-// ==== cấu hình Cloudinary dùng env ====
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
 
 @Controller('products')
 export class ProductsController {
