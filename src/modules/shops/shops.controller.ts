@@ -12,6 +12,7 @@ import {
   UseInterceptors,
   UploadedFile,
   ParseIntPipe,
+  ForbiddenException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/multer-options.interface';
@@ -21,17 +22,19 @@ import * as fs from 'fs';
 import { randomBytes } from 'crypto';
 import type { Express } from 'express';
 
-import { cloudinary } from '../../config/cloudinary.config'; // ✅ dùng config chung
+import { cloudinary } from '../../config/cloudinary.config';
 
 import { Public } from '../../common/decorators/public.decorator';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { AccessTokenGuard } from '../../common/guards/access-token.guard';
+import { CurrentUser } from 'src/common/decorators/current-user.decorator';
+
+// ✅ bạn muốn dùng Roles/AppRole ở controller
+import { Roles } from 'src/common/decorators/roles.decorator';
+import { AppRole } from 'src/common/constants/roles';
 
 import { ShopsService } from './shops.service';
 import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { QueryShopDto } from './dto/query-shop.dto';
-import { UserRole } from '../users/entities/user.entity';
 
 // ==== cấu hình upload 1 ảnh cho shop (lưu tạm vào uploads/shops) ====
 const shopUploadOptions: MulterOptions = {
@@ -59,7 +62,7 @@ const shopUploadOptions: MulterOptions = {
 export class ShopsController {
   constructor(private readonly shopsService: ShopsService) {}
 
-  /** Đăng ký shop (kiểm tra trùng tên) */
+  /** Đăng ký shop (login là được) */
   @Post('register')
   async register(
     @CurrentUser('sub') userSub: number,
@@ -71,22 +74,20 @@ export class ShopsController {
   }
 
   /** API check nhanh tên đã tồn tại chưa: /shops/check-name?name=. */
-  @Public()
   @Get('check-name')
   async checkName(@Query('name') name: string) {
     const exists = await this.shopsService.nameExists(String(name || '').trim());
     return { success: true, data: { exists } };
   }
 
-  /** Danh sách shop (public / admin), kèm stats */
-  @Public()
+  /** Danh sách shop (public) */
   @Get()
   async findAll(@Query() query: QueryShopDto) {
     const data = await this.shopsService.findAll(query);
     return { success: true, data };
   }
 
-  /** Shop của tài khoản đang đăng nhập (kèm stats) */
+  /** Shop của tài khoản đang đăng nhập */
   @Get('me')
   async myShop(@CurrentUser('sub') userSub: number) {
     const userId = Number(userSub);
@@ -130,36 +131,62 @@ export class ShopsController {
     return { success: true, data: shop };
   }
 
-  /** Lấy 1 shop theo id (kèm stats) */
+  /** Lấy 1 shop theo id (public) -> không trả doanh thu */
   @Public()
   @Get(':id')
   async findOne(@Param('id', ParseIntPipe) id: number) {
-    const shop = await this.shopsService.findOne(id);
+    const shop = await this.shopsService.findOnePublic(id);
     return { success: true, data: shop };
   }
 
-  /** Cập nhật shop: chủ shop hoặc ADMIN */
+  /**
+   * Cập nhật shop:
+   * - SELLER: chỉ sửa shop của chính họ
+   * - ADMIN: sửa bất kỳ shop + được đổi status
+   */
+  @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Patch(':id')
   async update(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser('sub') userSub: number,
-    @CurrentUser('role') role: UserRole,
+    @CurrentUser('role') role: AppRole,
     @Body() dto: UpdateShopDto,
   ) {
     const userId = Number(userSub);
-    const shop = await this.shopsService.updateShop(id, userId, role, dto);
+
+    // seller không được đổi status (đưa phân quyền lên controller)
+    if (role !== AppRole.ADMIN && dto.status !== undefined) {
+      throw new ForbiddenException('Chỉ ADMIN được đổi trạng thái shop.');
+    }
+
+    const shop =
+      role === AppRole.ADMIN
+        ? await this.shopsService.updateShopAsAdmin(id, dto)
+        : await this.shopsService.updateShopAsOwner(id, userId, dto);
+
     return { success: true, data: shop };
   }
 
-  /** Xoá shop: cascade xoá products & revert role */
+  /**
+   * Xoá shop:
+   * - SELLER: chỉ xoá shop của chính họ
+   * - ADMIN: xoá bất kỳ shop
+   */
+  @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Delete(':id')
   async remove(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser('sub') userSub: number,
-    @CurrentUser('role') role: UserRole,
+    @CurrentUser('role') role: AppRole,
   ) {
     const userId = Number(userSub);
-    await this.shopsService.removeShop(id, userId, role);
+
+    if (role === AppRole.ADMIN) {
+      await this.shopsService.removeShopAsAdmin(id);
+    } else {
+      await this.shopsService.removeShopAsOwner(id, userId);
+    }
+
     return { success: true };
   }
 }

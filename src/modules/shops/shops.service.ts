@@ -48,7 +48,6 @@ export class ShopsService {
     }
   }
 
-  /** So sánh tên không phân biệt hoa/thường (chính xác theo chuỗi) */
   async nameExists(name: string, ignoreId?: number) {
     const found = await this.shopsRepo.findOne({
       where: ignoreId ? { name: ILike(name), id: Not(ignoreId) } : { name: ILike(name) },
@@ -60,9 +59,15 @@ export class ShopsService {
   private toFixedOrNull(v?: number, digits = 7): string | null {
     return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : null;
   }
+
+  private async getShopOrThrow(id: number) {
+    const shop = await this.shopsRepo.findOne({ where: { id } });
+    if (!shop) throw new NotFoundException('Không tìm thấy shop.');
+    return shop;
+  }
+
   // ------------------------------------------------
 
-  /** Đăng ký shop: kiểm tra tên, tạo shop + stats, đổi role -> SELLER */
   async registerForUser(userId: number, dto: CreateShopDto) {
     if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
 
@@ -90,7 +95,7 @@ export class ShopsService {
         description: dto.description,
         slug,
         status: ShopStatus.PENDING,
-        // ---- address fields ----
+
         shopAddress: dto.shopAddress,
         shopLat: this.toFixedOrNull(dto.shopLat),
         shopLng: this.toFixedOrNull(dto.shopLng),
@@ -127,7 +132,7 @@ export class ShopsService {
     });
   }
 
-  /** Danh sách shop (phân trang + search) + kèm stats */
+  /** Danh sách shop (public) -> KHÔNG trả doanh thu */
   async findAll(query: QueryShopDto) {
     const { q, status, page = 1, limit = 20 } = query;
 
@@ -151,19 +156,20 @@ export class ShopsService {
     });
 
     const mapped = items.map((shop) => {
-      const stats = shop.stats;
+      const stats = shop.stats as any;
       const { stats: _ignored, ...plainShop } = shop as any;
 
       const productCount = stats?.productCount ?? 0;
-      const totalRevenue = Number(stats?.totalRevenue ?? 0);
       const totalOrders = stats?.totalOrders ?? 0;
       const totalSold = stats?.totalSold ?? 0;
 
+      // remove revenue
+      const { totalRevenue, ...statsPublic } = stats || {};
+
       return {
         ...plainShop,
-        stats,
+        stats: statsPublic,
         productCount,
-        totalRevenue,
         totalOrders,
         totalSold,
       };
@@ -172,7 +178,7 @@ export class ShopsService {
     return { items: mapped, page, limit, total };
   }
 
-  /** Shop của tài khoản đang login (kèm thống kê) */
+  /** Shop của tài khoản đang login (có thể giữ doanh thu) */
   async findMine(userId: number) {
     if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
 
@@ -211,43 +217,55 @@ export class ShopsService {
     };
   }
 
-  /** Lấy 1 shop theo id (kèm stats) */
-  async findOne(id: number) {
+  /** Public get shop by id -> KHÔNG trả doanh thu */
+  async findOnePublic(id: number) {
     const shop = await this.shopsRepo.findOne({
       where: { id },
       relations: { stats: true },
     });
     if (!shop) throw new NotFoundException('Không tìm thấy shop.');
 
-    const stats = shop.stats;
+    const stats = shop.stats as any;
     const { stats: _ignored, ...plainShop } = shop as any;
 
     const productCount = stats?.productCount ?? 0;
-    const totalRevenue = Number(stats?.totalRevenue ?? 0);
     const totalOrders = stats?.totalOrders ?? 0;
     const totalSold = stats?.totalSold ?? 0;
 
+    const { totalRevenue, ...statsPublic } = stats || {};
+
     return {
       ...plainShop,
-      stats,
+      stats: statsPublic,
       productCount,
-      totalRevenue,
       totalOrders,
       totalSold,
     };
   }
 
-  /** Cập nhật shop: chỉ chủ shop hoặc ADMIN */
-  async updateShop(id: number, actorId: number, actorRole: UserRole, dto: UpdateShopDto) {
-    const shop = await this.shopsRepo.findOne({ where: { id } });
-    if (!shop) throw new NotFoundException('Không tìm thấy shop.');
-
-    const isOwner = shop.userId === actorId;
-    const isAdmin = actorRole === UserRole.ADMIN;
-    if (!isOwner && !isAdmin) {
+  /** SELLER sửa shop của mình (service chỉ check owner) */
+  async updateShopAsOwner(id: number, ownerId: number, dto: UpdateShopDto) {
+    const shop = await this.getShopOrThrow(id);
+    if (shop.userId !== ownerId) {
       throw new ForbiddenException('Bạn không có quyền chỉnh sửa shop này.');
     }
 
+    // seller không được sửa status -> bỏ qua field này (controller đã chặn rồi)
+    const { status, ...safeDto } = dto as any;
+
+    await this.applyUpdate(shop, safeDto, id);
+    return this.withStats(shop.id, true); // true = include revenue
+  }
+
+  /** ADMIN sửa bất kỳ shop (bao gồm status) */
+  async updateShopAsAdmin(id: number, dto: UpdateShopDto) {
+    const shop = await this.getShopOrThrow(id);
+    await this.applyUpdate(shop, dto, id);
+    return this.withStats(shop.id, true);
+  }
+
+  /** Helper apply update fields */
+  private async applyUpdate(shop: Shop, dto: UpdateShopDto, id: number) {
     if (dto.name && dto.name.trim() && dto.name.trim() !== shop.name) {
       if (await this.nameExists(dto.name, id)) {
         throw new ConflictException('Tên shop đã tồn tại.');
@@ -266,45 +284,35 @@ export class ShopsService {
     if (dto.shopPhone !== undefined)   shop.shopPhone   = dto.shopPhone;
 
     if (dto.status !== undefined) {
-      if (!isAdmin) throw new ForbiddenException('Chỉ ADMIN được đổi trạng thái shop.');
-      shop.status = dto.status;
+      shop.status = dto.status; // admin route sẽ dùng; seller route đã strip
     }
 
     await this.shopsRepo.save(shop);
-
-    const stats = await this.statsRepo.findOne({ where: { shopId: shop.id } });
-
-    const productCount = stats?.productCount ?? 0;
-    const totalRevenue = Number(stats?.totalRevenue ?? 0);
-    const totalOrders = stats?.totalOrders ?? 0;
-    const totalSold = stats?.totalSold ?? 0;
-
-    return {
-      ...shop,
-      stats,
-      productCount,
-      totalRevenue,
-      totalOrders,
-      totalSold,
-    };
   }
 
-  /** Xóa shop (hard delete) -> CASCADE xóa products/images/variants, đổi role SELLER -> USER */
-  async removeShop(id: number, actorId: number, actorRole: UserRole) {
-    const shop = await this.shopsRepo.findOne({ where: { id } });
-    if (!shop) throw new NotFoundException('Không tìm thấy shop.');
-
-    const isOwner = shop.userId === actorId;
-    const isAdmin = actorRole === UserRole.ADMIN;
-    if (!isOwner && !isAdmin) {
+  /** SELLER xóa shop của mình */
+  async removeShopAsOwner(id: number, ownerId: number) {
+    const shop = await this.getShopOrThrow(id);
+    if (shop.userId !== ownerId) {
       throw new ForbiddenException('Bạn không có quyền xóa shop này.');
     }
+    await this.removeAndRevertRole(shop);
+    return { success: true };
+  }
 
+  /** ADMIN xóa bất kỳ shop */
+  async removeShopAsAdmin(id: number) {
+    const shop = await this.getShopOrThrow(id);
+    await this.removeAndRevertRole(shop);
+    return { success: true };
+  }
+
+  private async removeAndRevertRole(shop: Shop) {
     await this.dataSource.transaction(async (trx) => {
       const shopRepo = trx.getRepository(Shop);
       const userRepo = trx.getRepository(User);
 
-      await shopRepo.delete({ id });
+      await shopRepo.delete({ id: shop.id });
 
       const owner = await userRepo.findOne({ where: { id: shop.userId } });
       if (owner && owner.role === UserRole.SELLER) {
@@ -312,11 +320,30 @@ export class ShopsService {
         await userRepo.save(owner);
       }
     });
-
-    return { success: true };
   }
 
-  /** Chỉ cập nhật URL logo (đã được upload ở controller) */
+  /** trả shop + stats (include revenue nếu includeRevenue=true) */
+  private async withStats(shopId: number, includeRevenue: boolean) {
+    const shop = await this.shopsRepo.findOne({
+      where: { id: shopId },
+      relations: { stats: true },
+    });
+    if (!shop) throw new NotFoundException('Không tìm thấy shop.');
+
+    const stats = shop.stats as any;
+    const productCount = stats?.productCount ?? 0;
+    const totalOrders = stats?.totalOrders ?? 0;
+    const totalSold = stats?.totalSold ?? 0;
+
+    if (!includeRevenue) {
+      const { totalRevenue, ...statsPublic } = stats || {};
+      return { ...(shop as any), stats: statsPublic, productCount, totalOrders, totalSold };
+    }
+
+    const totalRevenue = Number(stats?.totalRevenue ?? 0);
+    return { ...(shop as any), stats, productCount, totalRevenue, totalOrders, totalSold };
+  }
+
   async updateLogoUrl(userId: number, logoUrl: string) {
     if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
 
@@ -345,7 +372,6 @@ export class ShopsService {
     };
   }
 
-  /** Chỉ cập nhật URL cover (đã được upload ở controller) */
   async updateCoverUrl(userId: number, coverUrl: string) {
     if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
 
