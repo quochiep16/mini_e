@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Not, Repository } from 'typeorm';
+import { DataSource, In, IsNull, Not, Repository } from 'typeorm';
 import { CreateProductDto } from './dto/create-product.dto';
 import { GenerateVariantsDto } from './dto/generate-variants.dto';
 import { UpdateVariantDto } from './dto/update-variant.dto';
@@ -17,6 +17,7 @@ import { Shop } from '../../modules/shops/entities/shop.entity';
 import { ShopStats } from '../../modules/shops/entities/shop-stats.entity';
 import { UserRole } from '../../modules/users/entities/user.entity';
 import { UpdateProductDto } from './dto/search-product.dto';
+import { Category } from '../categories/entities/category.entity';
 
 // Kiểu option đơn giản dùng trong service
 type Opt = { name: string; values: string[] };
@@ -30,6 +31,7 @@ export class ProductsService {
     @InjectRepository(ProductVariant) private readonly variantsRepo: Repository<ProductVariant>,
     @InjectRepository(Shop) private readonly shopsRepo: Repository<Shop>,
     @InjectRepository(ShopStats) private readonly statsRepo: Repository<ShopStats>,
+    @InjectRepository(Category) private readonly categoriesRepo: Repository<Category>,
   ) {}
 
   // ===== helpers =====
@@ -147,6 +149,7 @@ export class ProductsService {
     for (const o of incoming.slice(0, 5)) {
       const key = this.normForMatch(o.name);
       if (!key) continue;
+
       if (!byKey.has(key)) {
         const seen = new Set<string>();
         const values: string[] = [];
@@ -174,6 +177,35 @@ export class ProductsService {
       .map((b) => ({ name: b.displayName, values: b.values }));
   }
 
+  /**
+   * Validate categoryId:
+   * - undefined => không đổi / không set
+   * - null => gỡ category
+   * - number => phải tồn tại + isActive + chưa soft-delete
+   */
+  private async resolveCategoryId(input: any): Promise<number | null | undefined> {
+    if (input === undefined) return undefined;
+    if (input === null) return null;
+
+    const id = Number(input);
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new BadRequestException('categoryId không hợp lệ');
+    }
+
+    // Nếu bạn dùng soft-delete, TS không cho deletedAt: null -> dùng IsNull()
+    const cat = await this.categoriesRepo.findOne({
+      where: { id, isActive: true, deletedAt: IsNull() } as any,
+    });
+
+    // Nếu bạn không có deletedAt trong Category entity, dùng cái này thay:
+    // const cat = await this.categoriesRepo.findOne({ where: { id, isActive: true } });
+
+    if (!cat) {
+      throw new BadRequestException('categoryId không tồn tại hoặc đang bị tắt');
+    }
+    return cat.id;
+  }
+
   // ===== product =====
 
   async createBySeller(userId: number, dto: CreateProductDto) {
@@ -181,6 +213,7 @@ export class ProductsService {
     if (!shop) throw new ForbiddenException('Bạn chưa có shop.');
 
     const slug = await this.ensureUniqueSlug(dto.slug ?? dto.title);
+    const categoryId = await this.resolveCategoryId((dto as any).categoryId);
 
     try {
       return await this.dataSource.transaction(async (trx) => {
@@ -190,10 +223,11 @@ export class ProductsService {
 
         const product = productRepo.create({
           shopId: shop.id,
+          categoryId: categoryId ?? null,
           title: dto.title,
           slug,
           description: dto.description ?? null,
-          price: (+dto.price as any).toFixed(2),
+          price: Number((+dto.price).toFixed(2)),
           stock: dto.stock ?? 0,
           status: ProductStatus.ACTIVE,
           optionSchema: null,
@@ -317,7 +351,7 @@ export class ProductsService {
     id: number,
     actorId: number,
     actorRole: UserRole,
-    patch: Partial<Product>,
+    patch: UpdateProductDto & { categoryId?: number | null },
   ) {
     const product = await this.productsRepo.findOne({ where: { id } });
     if (!product) throw new NotFoundException('Không tìm thấy sản phẩm');
@@ -329,15 +363,24 @@ export class ProductsService {
     const isAdmin = actorRole === UserRole.ADMIN;
     if (!isOwner && !isAdmin) throw new ForbiddenException('Bạn không có quyền');
 
+    // category
+    if ((patch as any).categoryId !== undefined) {
+      const resolved = await this.resolveCategoryId((patch as any).categoryId);
+      // resolved undefined sẽ không vào đây vì patch.categoryId !== undefined
+      product.categoryId = resolved === undefined ? product.categoryId : resolved;
+    }
+
     if (patch.title && patch.title.trim()) {
       product.title = patch.title.trim();
-      if (!patch.slug)
+      if (!patch.slug) {
         product.slug = await this.ensureUniqueSlug(product.title, product.id);
+      }
     }
-    if (patch.slug && patch.slug.trim())
+    if (patch.slug && patch.slug.trim()) {
       product.slug = await this.ensureUniqueSlug(patch.slug, product.id);
+    }
     if (patch.description !== undefined) product.description = patch.description;
-    if (patch.price !== undefined) product.price = (+patch.price as any).toFixed(2);
+    if (patch.price !== undefined) product.price = Number((+patch.price).toFixed(2));
     if (patch.stock !== undefined) product.stock = +patch.stock;
     if (patch.status !== undefined) product.status = patch.status;
 
@@ -349,11 +392,7 @@ export class ProductsService {
     }
   }
 
-  async removeProduct(
-    id: number,
-    actorId: number,
-    actorRole: UserRole,
-  ) {
+  async removeProduct(id: number, actorId: number, actorRole: UserRole) {
     const product = await this.productsRepo.findOne({ where: { id } });
     if (!product) throw new NotFoundException('Không tìm thấy sản phẩm');
 
@@ -362,24 +401,20 @@ export class ProductsService {
     const isAdmin = actorRole === UserRole.ADMIN;
     if (!isOwner && !isAdmin) throw new ForbiddenException('Bạn không có quyền');
 
-    try {
-      await this.dataSource.transaction(async (trx) => {
-        const productRepo = trx.getRepository(Product);
-        const statsRepo = trx.getRepository(ShopStats);
+    await this.dataSource.transaction(async (trx) => {
+      const productRepo = trx.getRepository(Product);
+      const statsRepo = trx.getRepository(ShopStats);
 
-        await productRepo.delete({ id });
+      await productRepo.delete({ id });
 
-        const stats = await statsRepo.findOne({ where: { shopId: shop!.id } });
-        if (stats && stats.productCount > 0) {
-          stats.productCount -= 1;
-          await statsRepo.save(stats);
-        }
-      });
+      const stats = await statsRepo.findOne({ where: { shopId: shop!.id } });
+      if (stats && stats.productCount > 0) {
+        stats.productCount -= 1;
+        await statsRepo.save(stats);
+      }
+    });
 
-      return { success: true };
-    } catch (e) {
-      throw e;
-    }
+    return { success: true };
   }
 
   // ===== variants =====
@@ -509,11 +544,7 @@ export class ProductsService {
     }
   }
 
-  async listVariants(
-    productId: number,
-    actorId: number,
-    actorRole: UserRole,
-  ) {
+  async listVariants(productId: number, actorId: number, actorRole: UserRole) {
     const product = await this.productsRepo.findOne({ where: { id: productId } });
     if (!product) throw new NotFoundException('Không tìm thấy sản phẩm');
 
@@ -559,7 +590,7 @@ export class ProductsService {
 
     if (dto.name !== undefined) variant.name = dto.name;
     if (dto.sku !== undefined) variant.sku = dto.sku;
-    if (dto.price !== undefined) variant.price = (+dto.price as any).toFixed(2);
+    if (dto.price !== undefined) variant.price = (+dto.price as any).toFixed(2);  
     if (dto.stock !== undefined) variant.stock = +dto.stock;
 
     if (dto.imageId !== undefined) {

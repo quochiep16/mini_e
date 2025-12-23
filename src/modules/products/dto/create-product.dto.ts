@@ -36,4 +36,11 @@ export class CreateProductDto {
   @IsArray({ message: 'images phải là mảng' })
   @IsUrl({}, { each: true, message: 'Mỗi phần tử images phải là URL hợp lệ' })
   images?: string[];
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'categoryId phải là số nguyên' })
+  @Min(1, { message: 'categoryId phải ≥ 1' })
+  categoryId?: number;
+
 }

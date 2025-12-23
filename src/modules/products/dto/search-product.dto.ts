@@ -34,4 +34,11 @@ export class UpdateProductDto {
   @IsOptional()
   @IsEnum(ProductStatus, { message: 'status không hợp lệ' })
   status?: ProductStatus;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'categoryId phải là số nguyên' })
+  @Min(1, { message: 'categoryId phải ≥ 1' })
+  categoryId?: number | null;
+
 }

@@ -41,4 +41,11 @@ export class OrdersController {
     const data = await this.service.updateStatus(id, dto);
     return { success: true, data };
   }
+
+  @Post('orders/:id/confirm-received')
+  async confirmReceived(@CurrentUser('sub') userId: number, @Param('id', ParseUUIDPipe) id: string) {
+    const data = await this.service.confirmReceived(userId, id);
+    return { success: true, data };
+  }
+
 }

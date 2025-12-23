@@ -621,4 +621,26 @@ export class OrdersService {
     order.total = (Number(order.subtotal) - Number(order.discount) + Number(order.shippingFee)).toFixed(2);
     return this.orderRepo.save(order);
   }
+
+  async confirmReceived(userId: number, orderId: string) {
+    const order = await this.orderRepo.findOne({ where: { id: orderId, userId } });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+
+    if (order.shippingStatus !== ShippingStatus.DELIVERED) {
+      throw new BadRequestException('Đơn hàng chưa ở trạng thái DELIVERED nên chưa thể xác nhận nhận hàng');
+    }
+
+    // đã completed rồi thì thôi
+    if (order.status === OrderStatus.COMPLETED) return order;
+
+    order.status = OrderStatus.COMPLETED;
+
+    // COD thường thanh toán khi nhận hàng
+    if (order.paymentMethod === PaymentMethod.COD && order.paymentStatus !== PaymentStatus.PAID) {
+      order.paymentStatus = PaymentStatus.PAID;
+    }
+
+    return this.orderRepo.save(order);
+  }
+
 }

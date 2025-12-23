@@ -6,6 +6,7 @@ import {
 import { Shop } from '../../shops/entities/shop.entity';
 import { ProductImage } from './product-image.entity';
 import { ProductVariant } from './product-variant.entity';
+import { Category } from '../../categories/entities/category.entity';
 
 export enum ProductStatus {
   DRAFT = 'DRAFT',
@@ -14,6 +15,7 @@ export enum ProductStatus {
 }
 
 @Entity({ name: 'products' })
+@Index('IDX_products_category', ['categoryId'])
 @Index('UQ_products_slug', ['slug'], { unique: true })
 @Index('IDX_products_shop', ['shopId'])
 @Index('IDX_products_status', ['status'])
@@ -30,6 +32,10 @@ export class Product {
 
   @Column({ name: 'category_id', type: 'int', unsigned: true, nullable: true })
   categoryId?: number | null;
+
+  @ManyToOne(() => Category, (c) => c.products, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'category_id' })
+  category?: Category | null;
 
   @Column({ length: 180 })
   title: string;
