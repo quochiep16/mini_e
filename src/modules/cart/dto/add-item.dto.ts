@@ -1,18 +1,17 @@
+// src/modules/cart/dto/add-item.dto.ts
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsPositive } from 'class-validator';
+import { IsInt, IsPositive } from 'class-validator';
 
 export class AddItemDto {
   @Type(() => Number)
   @IsInt({ message: 'productId phải là số nguyên' })
   productId: number;
 
-  @IsOptional()
   @Type(() => Number)
   @IsInt({ message: 'variantId phải là số nguyên' })
-  variantId?: number;
+  variantId: number;
 
-  @IsOptional()
   @Type(() => Number)
   @IsPositive({ message: 'quantity phải > 0' })
-  quantity?: number = 1;
+  quantity: number = 1;
 }

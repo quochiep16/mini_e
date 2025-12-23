@@ -1,3 +1,4 @@
+// src/modules/cart/cart.controller.ts
 import {
   Body,
   Controller,
@@ -7,12 +8,11 @@ import {
   ParseIntPipe,
   Patch,
   Post,
-  UseGuards,
 } from '@nestjs/common';
 import { CartService } from './cart.service';
 import { AddItemDto } from './dto/add-item.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
-import { CurrentUser } from '../../common/decorators/current-user.decorator'; // decorator bạn đang dùng
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @Controller('cart')
 export class CartController {
