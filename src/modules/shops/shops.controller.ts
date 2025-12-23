@@ -81,6 +81,7 @@ export class ShopsController {
   }
 
   /** Danh sách shop (public) */
+  @Roles(AppRole.ADMIN)
   @Get()
   async findAll(@Query() query: QueryShopDto) {
     const data = await this.shopsService.findAll(query);
@@ -88,6 +89,7 @@ export class ShopsController {
   }
 
   /** Shop của tài khoản đang đăng nhập */
+  @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Get('me')
   async myShop(@CurrentUser('sub') userSub: number) {
     const userId = Number(userSub);
@@ -96,6 +98,7 @@ export class ShopsController {
   }
 
   /** Upload logo cho shop của chính mình */
+  @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Patch('me/logo')
   @UseInterceptors(FileInterceptor('file', shopUploadOptions))
   async uploadLogo(
@@ -114,6 +117,7 @@ export class ShopsController {
   }
 
   /** Upload cover cho shop của chính mình */
+  @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Patch('me/cover')
   @UseInterceptors(FileInterceptor('file', shopUploadOptions))
   async uploadCover(
