@@ -13,9 +13,11 @@ import { ProductImage } from '../products/entities/product-image.entity';
 import { Shop } from '../shops/entities/shop.entity';
 import { PaymentsController } from './payments.controller';
 import { PaymentGatewayService } from './payment.gateway';
+import { ConfigModule } from '@nestjs/config';
 
 @Module({
   imports: [
+    ConfigModule,
     TypeOrmModule.forFeature([Order, OrderItem, PaymentSession, Address, Product, ProductVariant, ProductImage, Shop]),
     CartModule,
   ],
