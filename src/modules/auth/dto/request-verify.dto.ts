@@ -1,7 +1,7 @@
-import { IsEmail, IsNotEmpty } from 'class-validator';
+import { IsIn, IsOptional } from 'class-validator';
 
 export class RequestVerifyDto {
-  @IsEmail({}, { message: 'Email không hợp lệ' })
-  @IsNotEmpty({ message: 'Email không được để trống' })
-  email!: string;
+  @IsOptional()
+  @IsIn(['email', 'phone'], { message: "via chỉ được là 'email' hoặc 'phone'" })
+  via?: 'email' | 'phone';
 }

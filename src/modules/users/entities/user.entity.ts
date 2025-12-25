@@ -1,7 +1,12 @@
 import { Shop } from 'src/modules/shops/entities/shop.entity';
 import {
-  Entity, PrimaryGeneratedColumn, Column, Index,
-  CreateDateColumn, UpdateDateColumn, DeleteDateColumn,
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  Index,
+  CreateDateColumn,
+  UpdateDateColumn,
+  DeleteDateColumn,
   OneToOne,
 } from 'typeorm';
 
@@ -19,38 +24,38 @@ export enum UserRole {
 
 @Entity('users')
 @Index('users_email_uq', ['email'], { unique: true })
-@Index('users_phone_idx', ['phone'])
+@Index('users_phone_uq', ['phone'], { unique: true })
 export class User {
-
   @PrimaryGeneratedColumn({ type: 'int', unsigned: true })
   id: number;
 
-  @Column({ name: 'name', length: 120 })
+  @Column({ name: 'name', type: 'varchar', length: 120 })
   name: string;
 
-  @Column({ length: 320, unique: true })
-  email: string;
+  // ✅ nullable + type rõ ràng (KHÔNG dùng string | null)
+  @Column({ name: 'email', type: 'varchar', length: 320, nullable: true })
+  email?: string;
 
-  @Column({ type: 'varchar', length: 20, nullable: true })
+  @Column({ name: 'phone', type: 'varchar', length: 20, nullable: true })
   phone?: string;
 
-  @Column({ name: 'password_hash', select: false })
+  @Column({ name: 'password_hash', type: 'varchar', length: 255, select: false })
   passwordHash: string;
 
   @Column({ type: 'text', nullable: true })
-  avatarUrl?: string | null;
+  avatarUrl?: string;
 
   @Column({ type: 'date', nullable: true })
-  birthday?: string | null;
+  birthday?: string;
 
   @Column({ type: 'enum', enum: Gender, nullable: true })
-  gender?: Gender | null;
+  gender?: Gender;
 
-  @Column({ type: 'varchar', nullable: true })
-  otp?: string | null;
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  otp?: string;
 
   @Column({ name: 'time_otp', type: 'datetime', precision: 6, nullable: true })
-  timeOtp?: Date | null;
+  timeOtp?: Date;
 
   @Column({ type: 'boolean', default: false })
   isVerified: boolean;
@@ -59,7 +64,7 @@ export class User {
   role: UserRole;
 
   @Column({ type: 'datetime', nullable: true })
-  lastLoginAt?: Date | null;
+  lastLoginAt?: Date;
 
   @CreateDateColumn()
   createdAt: Date;
@@ -68,9 +73,8 @@ export class User {
   updatedAt: Date;
 
   @DeleteDateColumn({ nullable: true })
-  deletedAt?: Date | null;
+  deletedAt?: Date;
 
   @OneToOne(() => Shop, (shop) => shop.user)
   shop?: Shop;
-
 }
