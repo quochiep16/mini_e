@@ -13,11 +13,12 @@ import { UpdateVariantDto } from './dto/update-variant.dto';
 import { Product, ProductStatus } from './entities/product.entity';
 import { ProductImage } from './entities/product-image.entity';
 import { ProductVariant } from './entities/product-variant.entity';
-import { Shop } from '../../modules/shops/entities/shop.entity';
+import { Shop, ShopStatus } from '../../modules/shops/entities/shop.entity';
 import { ShopStats } from '../../modules/shops/entities/shop-stats.entity';
 import { UserRole } from '../../modules/users/entities/user.entity';
 import { UpdateProductDto } from './dto/search-product.dto';
 import { Category } from '../categories/entities/category.entity';
+import { QueryProductsDto } from './dto/query-products.dto';
 
 // Kiểu option đơn giản dùng trong service
 type Opt = { name: string; values: string[] };
@@ -211,6 +212,9 @@ export class ProductsService {
   async createBySeller(userId: number, dto: CreateProductDto) {
     const shop = await this.shopsRepo.findOne({ where: { userId } });
     if (!shop) throw new ForbiddenException('Bạn chưa có shop.');
+    if (shop.status !== ShopStatus.ACTIVE) {
+      throw new ForbiddenException('Shop của bạn đang chờ ADMIN phê duyệt hoặc đang bị tạm khoá.');
+    }
 
     const slug = await this.ensureUniqueSlug(dto.slug ?? dto.title);
     const categoryId = await this.resolveCategoryId((dto as any).categoryId);
@@ -291,6 +295,53 @@ export class ProductsService {
       if (!map.has(img.productId)) {
         map.set(img.productId, img.url);
       }
+    }
+
+    const itemsWithImage = items.map((p) => ({
+      ...p,
+      mainImageUrl: map.get(p.id) ?? null,
+    }));
+
+    return { items: itemsWithImage, page, limit, total };
+  }
+
+  // Public list có filter theo query (q/status/shopId/categoryId)
+  async findPublic(query: QueryProductsDto) {
+    const page = Math.max(1, Number(query.page ?? 1));
+    const limit = Math.min(100, Math.max(1, Number(query.limit ?? 20)));
+
+    const qb = this.productsRepo.createQueryBuilder('p');
+
+    if (query.status) {
+      qb.andWhere('p.status = :status', { status: query.status });
+    }
+    if (query.shopId) {
+      qb.andWhere('p.shopId = :shopId', { shopId: query.shopId });
+    }
+    if (query.categoryId) {
+      qb.andWhere('p.categoryId = :categoryId', { categoryId: query.categoryId });
+    }
+
+    const q = (query.q ?? '').trim();
+    if (q) {
+      qb.andWhere('(p.title LIKE :q OR p.slug LIKE :q)', { q: `%${q}%` });
+    }
+
+    qb.orderBy('p.createdAt', 'DESC').addOrderBy('p.id', 'DESC');
+    qb.skip((page - 1) * limit).take(limit);
+
+    const [items, total] = await qb.getManyAndCount();
+
+    if (!items.length) return { items: [], page, limit, total };
+
+    const ids = items.map((p) => p.id);
+    const mainImages = await this.imagesRepo.find({
+      where: { productId: In(ids), isMain: true },
+    });
+
+    const map = new Map<number, string>();
+    for (const img of mainImages) {
+      if (!map.has(img.productId)) map.set(img.productId, img.url);
     }
 
     const itemsWithImage = items.map((p) => ({

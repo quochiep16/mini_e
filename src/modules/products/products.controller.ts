@@ -30,6 +30,7 @@ import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { GenerateVariantsDto } from './dto/generate-variants.dto';
 import { UpdateVariantDto } from './dto/update-variant.dto';
+import { QueryProductsDto } from './dto/query-products.dto';
 
 import { AccessTokenGuard } from '../../common/guards/access-token.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -65,8 +66,8 @@ export class ProductsController {
   // ===== public list/detail =====
   @Public()
   @Get()
-  async list(@Query('page') page = '1', @Query('limit') limit = '20') {
-    const data = await this.productsService.findAllBasic(Number(page), Number(limit));
+  async list(@Query() q: QueryProductsDto) {
+    const data = await this.productsService.findPublic(q);
     return { success: true, data };
   }
 
