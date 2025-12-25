@@ -86,8 +86,18 @@ export class OrdersService {
       // đảm bảo có stats
       let stats = await this.shopStatsRepo.findOne({ where: { shopId } as any });
       if (!stats) {
-        stats = this.shopStatsRepo.create({ shopId, productCount: 0, totalSold: 0, totalRevenue: 0, totalOrders: 0 } as any);
-        stats = await this.shopStatsRepo.save(stats);
+        const newStats = {
+          shopId,
+          productCount: 0,
+          totalSold: 0,
+          totalRevenue: 0,
+          totalOrders: 0,
+        } as Partial<ShopStats>;
+        stats = await this.shopStatsRepo.save(newStats);
+      }
+
+      if (!stats) {
+        throw new Error('Không thể tạo hoặc tìm thấy ShopStats');
       }
 
       stats.totalOrders = Number(stats.totalOrders ?? 0) + 1;
