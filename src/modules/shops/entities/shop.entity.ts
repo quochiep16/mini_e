@@ -22,9 +22,10 @@ export class Shop {
   @Column({ name: 'user_id', type: 'int', unsigned: true })
   userId: number;
 
-  @OneToOne(() => User, (u) => u.shop, { onDelete: 'RESTRICT' })
+  @OneToOne(() => User, (u) => u.shop, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'user_id' })
   user: User;
+
 
   @Column({ length: 150 })
   name: string;
