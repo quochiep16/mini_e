@@ -1,72 +1,31 @@
-import { MigrationInterface, QueryRunner, Table, TableForeignKey, TableIndex } from 'typeorm';
+import { MigrationInterface, QueryRunner } from 'typeorm';
 
 export class InitProductReviews1700000007000 implements MigrationInterface {
   name = 'InitProductReviews1700000007000';
 
-  public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.createTable(
-      new Table({
-        name: 'product_reviews',
-        columns: [
-          { name: 'id', type: 'char', length: '36', isPrimary: true },
-          { name: 'order_id', type: 'char', length: '36', isNullable: false },
-          { name: 'user_id', type: 'int', isNullable: false },
-          { name: 'product_id', type: 'int', unsigned: true, isNullable: false },
-          { name: 'rating', type: 'tinyint', unsigned: true, isNullable: false },
-          { name: 'comment', type: 'text', isNullable: true },
-          { name: 'images', type: 'json', isNullable: true },
-          { name: 'created_at', type: 'datetime', default: 'CURRENT_TIMESTAMP' },
-          { name: 'updated_at', type: 'datetime', default: 'CURRENT_TIMESTAMP', onUpdate: 'CURRENT_TIMESTAMP' },
-        ],
-      }),
-      true,
-    );
-
-    await queryRunner.createIndex(
-      'product_reviews',
-      new TableIndex({ name: 'UQ_reviews_order', columnNames: ['order_id'], isUnique: true }),
-    );
-    await queryRunner.createIndex(
-      'product_reviews',
-      new TableIndex({ name: 'IDX_reviews_product', columnNames: ['product_id'] }),
-    );
-    await queryRunner.createIndex(
-      'product_reviews',
-      new TableIndex({ name: 'IDX_reviews_user', columnNames: ['user_id'] }),
-    );
-
-    await queryRunner.createForeignKey(
-      'product_reviews',
-      new TableForeignKey({
-        name: 'FK_reviews_order',
-        columnNames: ['order_id'],
-        referencedTableName: 'orders',
-        referencedColumnNames: ['id'],
-        onDelete: 'CASCADE',
-      }),
-    );
-
-    await queryRunner.createForeignKey(
-      'product_reviews',
-      new TableForeignKey({
-        name: 'FK_reviews_product',
-        columnNames: ['product_id'],
-        referencedTableName: 'products',
-        referencedColumnNames: ['id'],
-        onDelete: 'CASCADE',
-      }),
-    );
+  public async up(q: QueryRunner): Promise<void> {
+    await q.query(`
+      CREATE TABLE IF NOT EXISTS product_reviews (
+        id CHAR(36) NOT NULL,
+        order_id CHAR(36) NOT NULL,
+        user_id INT UNSIGNED NOT NULL,
+        product_id INT UNSIGNED NOT NULL,
+        rating TINYINT UNSIGNED NOT NULL,
+        comment TEXT NULL,
+        images JSON NULL,
+        created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+        PRIMARY KEY (id),
+        UNIQUE KEY UQ_reviews_order (order_id),
+        KEY IDX_reviews_product (product_id),
+        KEY IDX_reviews_user (user_id),
+        CONSTRAINT FK_reviews_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+        CONSTRAINT FK_reviews_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
   }
 
-  public async down(queryRunner: QueryRunner): Promise<void> {
-    const table = await queryRunner.getTable('product_reviews');
-    if (table) {
-      const fk1 = table.foreignKeys.find((fk) => fk.name === 'FK_reviews_order');
-      if (fk1) await queryRunner.dropForeignKey('product_reviews', fk1);
-
-      const fk2 = table.foreignKeys.find((fk) => fk.name === 'FK_reviews_product');
-      if (fk2) await queryRunner.dropForeignKey('product_reviews', fk2);
-    }
-    await queryRunner.dropTable('product_reviews');
+  public async down(q: QueryRunner): Promise<void> {
+    await q.query(`DROP TABLE IF EXISTS product_reviews`);
   }
 }

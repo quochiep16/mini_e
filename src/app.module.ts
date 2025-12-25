@@ -21,6 +21,8 @@ import { User } from './modules/users/entities/user.entity';
 import { CartModule } from './modules/cart/cart.module';
 import { AddressesModule } from './modules/addresses/addresses.module';
 import { OrdersModule } from './modules/orders/orders.module';
+import { CategoriesModule } from './modules/categories/categories.module';
+import { ReviewsModule } from './modules/reviews/reviews.module';
 
 
 @Module({
@@ -59,6 +61,8 @@ import { OrdersModule } from './modules/orders/orders.module';
     CartModule,
     AddressesModule,
     OrdersModule,
+    CategoriesModule,
+    ReviewsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AccessTokenGuard }, // yêu cầu JWT mặc định

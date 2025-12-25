@@ -25,10 +25,12 @@ export class ProductReview {
   @JoinColumn({ name: 'order_id' })
   order: Order;
 
-  @Column({ type: 'int', name: 'user_id' })
+  // ✅ nên để UNSIGNED cho khớp users.id (INT UNSIGNED)
+  @Column({ type: 'int', unsigned: true, name: 'user_id' })
   userId: number;
 
-  @Column({ type: 'int', name: 'product_id' })
+  // ✅ nên để UNSIGNED cho khớp products.id (INT UNSIGNED)
+  @Column({ type: 'int', unsigned: true, name: 'product_id' })
   productId: number;
 
   @Column({ type: 'tinyint', unsigned: true })

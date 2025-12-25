@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ProductReview } from './entities/product-review.entity';
 import { CreateReviewDto } from './dto/create-review.dto';
-import { Order, OrderStatus } from '../orders/entities/order.entity';
+import { Order, OrderStatus, ShippingStatus } from '../orders/entities/order.entity';
 import { OrderItem } from '../orders/entities/order-item.entity';
 
 @Injectable()
@@ -21,9 +21,19 @@ export class ReviewsService {
 
     if (order.userId !== userId) throw new ForbiddenException('Bạn không có quyền review đơn này');
 
-    // ✅ chỉ khi đã "nhận hàng"
-    if (order.status !== OrderStatus.COMPLETED) {
-      throw new BadRequestException('Chỉ được đánh giá sau khi đơn đã ở trạng thái COMPLETED (đã nhận hàng)');
+    /**
+     * ✅ Rule mới bạn chốt:
+     * - Shop cập nhật shippingStatus = DELIVERED thì user mới được review
+     *
+     * Nếu bạn vẫn muốn “nhận hàng = COMPLETED”, bạn có thể đổi điều kiện thành:
+     * if (order.status !== OrderStatus.COMPLETED) ...
+     *
+     * Mình để “DELIVERED hoặc COMPLETED” cho chắc chắn trong giai đoạn chuyển đổi.
+     */
+    const ok =
+      order.shippingStatus === ShippingStatus.DELIVERED || order.status === OrderStatus.COMPLETED;
+    if (!ok) {
+      throw new BadRequestException('Chỉ được đánh giá sau khi đơn đã giao (DELIVERED) hoặc đã nhận hàng (COMPLETED)');
     }
 
     const existed = await this.reviewRepo.exists({ where: { orderId } as any });
@@ -33,19 +43,21 @@ export class ReviewsService {
     const items = await this.itemRepo.find({ where: { orderId } });
     if (!items.length) throw new BadRequestException('Đơn hàng không có items');
 
-    // Vì bạn thiết kế 1 order = 1 product, nên tất cả items phải cùng productId
+    // Vì bạn thiết kế 1 order = 1 product
     const productId = items[0].productId;
     const different = items.some((i) => i.productId !== productId);
     if (different) {
       throw new BadRequestException('Order này chứa nhiều productId — không phù hợp rule 1 order = 1 product');
     }
 
+    const comment = (dto.content ?? dto.comment)?.trim() || null;
+
     const review = this.reviewRepo.create({
       orderId,
       userId,
       productId,
       rating: dto.rating,
-      comment: dto.comment?.trim() ? dto.comment.trim() : null,
+      comment,
       images: dto.images?.length ? dto.images : null,
     });
 
@@ -70,7 +82,6 @@ export class ReviewsService {
       take: limit,
     });
 
-    // summary avg + count
     const raw = await this.reviewRepo
       .createQueryBuilder('r')
       .select('COUNT(1)', 'count')

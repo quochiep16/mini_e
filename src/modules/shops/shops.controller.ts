@@ -8,7 +8,6 @@ import {
   Patch,
   Post,
   Query,
-  UseGuards,
   UseInterceptors,
   UploadedFile,
   ParseIntPipe,
@@ -27,7 +26,6 @@ import { cloudinary } from '../../config/cloudinary.config';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 
-// ✅ bạn muốn dùng Roles/AppRole ở controller
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { AppRole } from 'src/common/constants/roles';
 
@@ -36,7 +34,6 @@ import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { QueryShopDto } from './dto/query-shop.dto';
 
-// ==== cấu hình upload 1 ảnh cho shop (lưu tạm vào uploads/shops) ====
 const shopUploadOptions: MulterOptions = {
   storage: diskStorage({
     destination: (req, file, cb) => {
@@ -62,7 +59,6 @@ const shopUploadOptions: MulterOptions = {
 export class ShopsController {
   constructor(private readonly shopsService: ShopsService) {}
 
-  /** Đăng ký shop (login là được) */
   @Post('register')
   async register(
     @CurrentUser('sub') userSub: number,
@@ -73,14 +69,12 @@ export class ShopsController {
     return { success: true, data: shop };
   }
 
-  /** API check nhanh tên đã tồn tại chưa: /shops/check-name?name=. */
   @Get('check-name')
   async checkName(@Query('name') name: string) {
     const exists = await this.shopsService.nameExists(String(name || '').trim());
     return { success: true, data: { exists } };
   }
 
-  /** Danh sách shop (public) */
   @Roles(AppRole.ADMIN)
   @Get()
   async findAll(@Query() query: QueryShopDto) {
@@ -88,7 +82,6 @@ export class ShopsController {
     return { success: true, data };
   }
 
-  /** Shop của tài khoản đang đăng nhập */
   @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Get('me')
   async myShop(@CurrentUser('sub') userSub: number) {
@@ -97,7 +90,21 @@ export class ShopsController {
     return { success: true, data: shop };
   }
 
-  /** Upload logo cho shop của chính mình */
+  @Roles(AppRole.SELLER, AppRole.ADMIN)
+  @Get('me/orders')
+  async myShopOrders(
+    @CurrentUser('sub') userSub: number,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const userId = Number(userSub);
+    const p = Math.max(1, parseInt(page || '1', 10));
+    const l = Math.max(1, Math.min(100, parseInt(limit || '20', 10)));
+    const data = await this.shopsService.listMyShopOrders(userId, p, l);
+    return { success: true, data };
+  }
+
+
   @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Patch('me/logo')
   @UseInterceptors(FileInterceptor('file', shopUploadOptions))
@@ -116,7 +123,6 @@ export class ShopsController {
     return { success: true, data: shop };
   }
 
-  /** Upload cover cho shop của chính mình */
   @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Patch('me/cover')
   @UseInterceptors(FileInterceptor('file', shopUploadOptions))
@@ -135,7 +141,6 @@ export class ShopsController {
     return { success: true, data: shop };
   }
 
-  /** Lấy 1 shop theo id (public) -> không trả doanh thu */
   @Public()
   @Get(':id')
   async findOne(@Param('id', ParseIntPipe) id: number) {
@@ -143,11 +148,6 @@ export class ShopsController {
     return { success: true, data: shop };
   }
 
-  /**
-   * Cập nhật shop:
-   * - SELLER: chỉ sửa shop của chính họ
-   * - ADMIN: sửa bất kỳ shop + được đổi status
-   */
   @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Patch(':id')
   async update(
@@ -158,7 +158,6 @@ export class ShopsController {
   ) {
     const userId = Number(userSub);
 
-    // seller không được đổi status (đưa phân quyền lên controller)
     if (role !== AppRole.ADMIN && dto.status !== undefined) {
       throw new ForbiddenException('Chỉ ADMIN được đổi trạng thái shop.');
     }
@@ -171,11 +170,6 @@ export class ShopsController {
     return { success: true, data: shop };
   }
 
-  /**
-   * Xoá shop:
-   * - SELLER: chỉ xoá shop của chính họ
-   * - ADMIN: xoá bất kỳ shop
-   */
   @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Delete(':id')
   async remove(
