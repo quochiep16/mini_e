@@ -14,24 +14,16 @@ export class ReviewsService {
     @InjectRepository(OrderItem) private readonly itemRepo: Repository<OrderItem>,
   ) {}
 
-  // ✅ tạo review theo orderId
   async createForOrder(userId: number, orderId: string, dto: CreateReviewDto) {
     const order = await this.orderRepo.findOne({ where: { id: orderId } });
     if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
 
     if (order.userId !== userId) throw new ForbiddenException('Bạn không có quyền review đơn này');
 
-    /**
-     * ✅ Rule mới bạn chốt:
-     * - Shop cập nhật shippingStatus = DELIVERED thì user mới được review
-     *
-     * Nếu bạn vẫn muốn “nhận hàng = COMPLETED”, bạn có thể đổi điều kiện thành:
-     * if (order.status !== OrderStatus.COMPLETED) ...
-     *
-     * Mình để “DELIVERED hoặc COMPLETED” cho chắc chắn trong giai đoạn chuyển đổi.
-     */
+    // ✅ Cho phép review khi đã giao (DELIVERED) hoặc đã nhận hàng (COMPLETED)
     const ok =
       order.shippingStatus === ShippingStatus.DELIVERED || order.status === OrderStatus.COMPLETED;
+
     if (!ok) {
       throw new BadRequestException('Chỉ được đánh giá sau khi đơn đã giao (DELIVERED) hoặc đã nhận hàng (COMPLETED)');
     }
@@ -39,25 +31,21 @@ export class ReviewsService {
     const existed = await this.reviewRepo.exists({ where: { orderId } as any });
     if (existed) throw new BadRequestException('Đơn hàng này đã được đánh giá rồi');
 
-    // Lấy productId từ order_items
     const items = await this.itemRepo.find({ where: { orderId } });
     if (!items.length) throw new BadRequestException('Đơn hàng không có items');
 
-    // Vì bạn thiết kế 1 order = 1 product
     const productId = items[0].productId;
     const different = items.some((i) => i.productId !== productId);
     if (different) {
       throw new BadRequestException('Order này chứa nhiều productId — không phù hợp rule 1 order = 1 product');
     }
 
-    const comment = (dto.content ?? dto.comment)?.trim() || null;
-
     const review = this.reviewRepo.create({
       orderId,
       userId,
       productId,
       rating: dto.rating,
-      comment,
+      comment: dto.comment?.trim() ? dto.comment.trim() : null,
       images: dto.images?.length ? dto.images : null,
     });
 
@@ -73,20 +61,51 @@ export class ReviewsService {
     return review ?? null;
   }
 
-  // Public: list reviews theo product
+  // ✅ Public: list reviews theo product + trả thêm user {id,name,avatarUrl}
   async listByProduct(productId: number, page = 1, limit = 20) {
-    const [items, total] = await this.reviewRepo.findAndCount({
-      where: { productId } as any,
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    const qb = this.reviewRepo
+      .createQueryBuilder('r')
+      .leftJoinAndSelect('r.user', 'u', 'u.deletedAt IS NULL')
+      .where('r.productId = :pid', { pid: productId })
+      .orderBy('r.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      // ✅ chỉ chọn field cần thiết (không lộ email/role/...)
+      .select([
+        'r.id',
+        'r.orderId',
+        'r.userId',
+        'r.productId',
+        'r.rating',
+        'r.comment',
+        'r.images',
+        'r.createdAt',
+        'r.updatedAt',
+        'u.id',
+        'u.name',
+        'u.avatarUrl',
+      ]);
+
+    const [rows, total] = await qb.getManyAndCount();
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      orderId: r.orderId,
+      userId: r.userId,
+      productId: r.productId,
+      rating: r.rating,
+      comment: r.comment,
+      images: r.images,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      user: r.user ? { id: r.user.id, name: r.user.name, avatarUrl: r.user.avatarUrl ?? null } : null,
+    }));
 
     const raw = await this.reviewRepo
       .createQueryBuilder('r')
       .select('COUNT(1)', 'count')
       .addSelect('AVG(r.rating)', 'avg')
-      .where('r.product_id = :pid', { pid: productId })
+      .where('r.productId = :pid', { pid: productId })
       .getRawOne();
 
     const count = Number(raw?.count ?? 0);

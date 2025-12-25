@@ -9,9 +9,10 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { Order } from '../../orders/entities/order.entity';
+import { User } from '../../users/entities/user.entity';
 
 @Entity('product_reviews')
-@Index('UQ_reviews_order', ['orderId'], { unique: true }) // ✅ 1 order chỉ 1 review
+@Index('UQ_reviews_order', ['orderId'], { unique: true }) // 1 order chỉ 1 review
 @Index('IDX_reviews_product', ['productId'])
 @Index('IDX_reviews_user', ['userId'])
 export class ProductReview {
@@ -25,16 +26,18 @@ export class ProductReview {
   @JoinColumn({ name: 'order_id' })
   order: Order;
 
-  // ✅ nên để UNSIGNED cho khớp users.id (INT UNSIGNED)
   @Column({ type: 'int', unsigned: true, name: 'user_id' })
   userId: number;
 
-  // ✅ nên để UNSIGNED cho khớp products.id (INT UNSIGNED)
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'user_id' })
+  user?: User | null;
+
   @Column({ type: 'int', unsigned: true, name: 'product_id' })
   productId: number;
 
   @Column({ type: 'tinyint', unsigned: true })
-  rating: number; // 1..5
+  rating: number;
 
   @Column({ type: 'text', nullable: true })
   comment: string | null;

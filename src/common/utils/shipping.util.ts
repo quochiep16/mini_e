@@ -16,7 +16,7 @@ export function haversineKm(lat1: number, lon1: number, lat2: number, lon2: numb
  * 20–50km: 20k
  * 50–200km: 30k
  * >200km: 40k
- * Free ship khi tổng đơn > 500k (xử lý ở FE/hoặc trước khi tạo order nếu muốn)
+ * Free ship khi tổng đơn > 500k 
  */
 export function calcShippingFee(distanceKm: number, subtotal: number): number {
   let fee = 0;
