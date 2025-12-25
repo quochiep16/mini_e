@@ -20,10 +20,8 @@ export class ReviewsService {
 
     if (order.userId !== userId) throw new ForbiddenException('Bạn không có quyền review đơn này');
 
-    // ✅ Cho phép review khi đã giao (DELIVERED) hoặc đã nhận hàng (COMPLETED)
-    const ok =
-      order.shippingStatus === ShippingStatus.DELIVERED || order.status === OrderStatus.COMPLETED;
-
+    // ✅ Luồng cũ: cho phép review khi đã giao (DELIVERED) hoặc đã nhận hàng (COMPLETED)
+    const ok = order.shippingStatus === ShippingStatus.DELIVERED || order.status === OrderStatus.COMPLETED;
     if (!ok) {
       throw new BadRequestException('Chỉ được đánh giá sau khi đơn đã giao (DELIVERED) hoặc đã nhận hàng (COMPLETED)');
     }

@@ -48,4 +48,10 @@ export class OrdersController {
     return { success: true, data };
   }
 
+  @Post('orders/:id/request-return')
+  async requestReturn(@CurrentUser('sub') userId: number, @Param('id', ParseUUIDPipe) id: string) {
+    const data = await this.service.requestReturn(userId, id);
+    return { success: true, data };
+  }
+
 }

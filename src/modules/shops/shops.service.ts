@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, ILike, In, Not, Repository } from 'typeorm';
@@ -15,7 +16,7 @@ import { QueryShopDto } from './dto/query-shop.dto';
 import { User, UserRole } from '../../modules/users/entities/user.entity';
 
 // ✅ thêm entities để join orders
-import { Order } from '../../modules/orders/entities/order.entity';
+import { Order, OrderStatus, ShippingStatus } from '../../modules/orders/entities/order.entity';
 import { OrderItem } from '../../modules/orders/entities/order-item.entity';
 import { Product } from '../../modules/products/entities/product.entity';
 
@@ -125,6 +126,89 @@ export class ShopsService {
     const ordered = ids.map((id) => map.get(id)).filter(Boolean);
 
     return { items: ordered, page, limit, total };
+  }
+
+  private async getMyShopIdOrThrow(userId: number): Promise<number> {
+    const shop = await this.shopsRepo.findOne({
+      where: { userId },
+      select: { id: true } as any,
+    });
+    if (!shop) throw new NotFoundException('Bạn chưa có shop.');
+    return Number((shop as any).id);
+  }
+
+  private async assertOrderBelongsToShop(orderId: string, shopId: number) {
+    const row = await this.dataSource
+      .createQueryBuilder()
+      .select('COUNT(oi.id)', 'cnt')
+      .from('order_items', 'oi')
+      .innerJoin('products', 'p', 'p.id = oi.product_id')
+      .where('oi.order_id = :orderId', { orderId })
+      .andWhere('p.shop_id = :shopId', { shopId })
+      .getRawOne<{ cnt: string }>();
+
+    const cnt = Number(row?.cnt || 0);
+    if (cnt <= 0) throw new NotFoundException('Không tìm thấy đơn hàng thuộc shop của bạn.');
+  }
+
+  async getMyShopOrderDetail(userId: number, orderId: string) {
+    if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
+    const shopId = await this.getMyShopIdOrThrow(userId);
+    await this.assertOrderBelongsToShop(orderId, shopId);
+
+    const order = await this.ordersRepo.findOne({
+      where: { id: orderId } as any,
+      relations: { items: true } as any,
+    });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng.');
+    return order;
+  }
+
+  private isValidNextShipping(prev: ShippingStatus, next: ShippingStatus) {
+    const allow: Record<string, ShippingStatus[]> = {
+      // luồng shop: đã nhận đơn -> đang giao -> đã giao (user sẽ xác nhận nhận/hoàn)
+      PENDING: [ShippingStatus.IN_TRANSIT, ShippingStatus.CANCELED],
+      IN_TRANSIT: [ShippingStatus.DELIVERED, ShippingStatus.CANCELED],
+      // giữ lại cho tương thích dữ liệu cũ
+      PICKED: [ShippingStatus.IN_TRANSIT, ShippingStatus.CANCELED],
+      DELIVERED: [],
+      RETURNED: [],
+      CANCELED: [],
+    };
+    return (allow[String(prev)] ?? []).includes(next);
+  }
+
+  async updateMyShopOrderShippingStatus(userId: number, orderId: string, shippingStatus: ShippingStatus) {
+    if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
+    const shopId = await this.getMyShopIdOrThrow(userId);
+    await this.assertOrderBelongsToShop(orderId, shopId);
+
+    const order = await this.ordersRepo.findOne({ where: { id: orderId } as any });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng.');
+
+    if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.COMPLETED) {
+      throw new BadRequestException('Đơn hàng đã kết thúc, không thể cập nhật trạng thái.');
+    }
+
+    const prev = order.shippingStatus as any as ShippingStatus;
+    if (prev === shippingStatus) return order;
+
+    if (!this.isValidNextShipping(prev, shippingStatus)) {
+      throw new BadRequestException(`Không thể chuyển trạng thái từ ${prev} sang ${shippingStatus}`);
+    }
+
+    order.shippingStatus = shippingStatus as any;
+
+    // đồng bộ order.status theo shippingStatus để user theo dõi
+    if (shippingStatus === ShippingStatus.CANCELED) {
+      order.status = OrderStatus.CANCELLED;
+    } else if (shippingStatus === ShippingStatus.PENDING) {
+      order.status = OrderStatus.PROCESSING;
+    } else if (shippingStatus === ShippingStatus.IN_TRANSIT || shippingStatus === ShippingStatus.DELIVERED) {
+      order.status = OrderStatus.SHIPPED;
+    }
+
+    return this.ordersRepo.save(order as any);
   }
 
 

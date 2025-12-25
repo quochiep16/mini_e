@@ -10,6 +10,7 @@ import { Product } from '../products/entities/product.entity';
 import { ProductVariant } from '../products/entities/product-variant.entity';
 import { ProductImage } from '../products/entities/product-image.entity';
 import { Shop } from '../shops/entities/shop.entity';
+import { ShopStats } from '../shops/entities/shop-stats.entity';
 import { haversineKm, calcShippingFee } from '../../common/utils/shipping.util';
 import { PaymentGatewayService } from './payment.gateway';
 import { PaymentSession, PaymentSessionStatus } from './entities/payment-session.entity';
@@ -57,8 +58,61 @@ export class OrdersService {
     @InjectRepository(ProductVariant) private readonly variantRepo: Repository<ProductVariant>,
     @InjectRepository(ProductImage) private readonly imageRepo: Repository<ProductImage>,
     @InjectRepository(Shop) private readonly shopRepo: Repository<Shop>,
+    @InjectRepository(ShopStats) private readonly shopStatsRepo: Repository<ShopStats>,
     @InjectRepository(PaymentSession) private readonly sessionRepo: Repository<PaymentSession>,
   ) {}
+
+  private async applyShopStatsOnCompleted(orderId: string) {
+    // Chỉ tính thống kê khi đơn đã "kết thúc" (user xác nhận nhận hàng)
+    const rows = await this.dataSource
+      .createQueryBuilder()
+      .select('p.shop_id', 'shopId')
+      .addSelect('SUM(oi.quantity)', 'qty')
+      .addSelect('SUM(oi.total_line)', 'lines')
+      .addSelect('COUNT(DISTINCT oi.product_id)', 'productCount')
+      .from('order_items', 'oi')
+      .innerJoin('products', 'p', 'p.id = oi.product_id')
+      .where('oi.order_id = :orderId', { orderId })
+      .groupBy('p.shop_id')
+      .getRawMany<{ shopId: string; qty: string; lines: string; productCount: string }>();
+
+    for (const r of rows) {
+      const shopId = Number(r.shopId);
+      if (!shopId) continue;
+
+      const qty = Number(r.qty || 0);
+      const lines = Number(r.lines || 0);
+
+      // đảm bảo có stats
+      let stats = await this.shopStatsRepo.findOne({ where: { shopId } as any });
+      if (!stats) {
+        stats = this.shopStatsRepo.create({ shopId, productCount: 0, totalSold: 0, totalRevenue: 0, totalOrders: 0 } as any);
+        stats = await this.shopStatsRepo.save(stats);
+      }
+
+      stats.totalOrders = Number(stats.totalOrders ?? 0) + 1;
+      stats.totalSold = Number(stats.totalSold ?? 0) + Math.max(0, qty);
+      if (lines > 0) stats.totalRevenue = Number(stats.totalRevenue ?? 0) + lines;
+
+      await this.shopStatsRepo.save(stats);
+    }
+
+    const prodRows = await this.dataSource
+      .createQueryBuilder()
+      .select('oi.product_id', 'productId')
+      .addSelect('SUM(oi.quantity)', 'qty')
+      .from('order_items', 'oi')
+      .where('oi.order_id = :orderId', { orderId })
+      .groupBy('oi.product_id')
+      .getRawMany<{ productId: string; qty: string }>();
+
+    for (const pr of prodRows) {
+      const pid = Number(pr.productId);
+      const q = Number(pr.qty || 0);
+      if (!pid || q <= 0) continue;
+      await this.productRepo.increment({ id: pid } as any, 'sold', q);
+    }
+  }
 
   private genOrderCode() {
     const n = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
@@ -638,6 +692,31 @@ export class OrdersService {
     // COD thường thanh toán khi nhận hàng
     if (order.paymentMethod === PaymentMethod.COD && order.paymentStatus !== PaymentStatus.PAID) {
       order.paymentStatus = PaymentStatus.PAID;
+    }
+
+    const saved = await this.orderRepo.save(order);
+
+    // ✅ Chỉ tính thống kê khi user xác nhận nhận hàng (kết thúc)
+    await this.applyShopStatsOnCompleted(orderId);
+
+    return saved;
+  }
+
+  async requestReturn(userId: number, orderId: string) {
+    const order = await this.orderRepo.findOne({ where: { id: orderId, userId } });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+
+    if (order.shippingStatus !== ShippingStatus.DELIVERED) {
+      throw new BadRequestException('Chỉ có thể hoàn hàng khi đơn đã giao (DELIVERED)');
+    }
+    if (order.status === OrderStatus.COMPLETED) return order;
+
+    order.status = OrderStatus.COMPLETED;
+    order.shippingStatus = ShippingStatus.RETURNED;
+
+    // nếu đã thanh toán thì đánh dấu refunded (logic đơn giản)
+    if (order.paymentStatus === PaymentStatus.PAID) {
+      order.paymentStatus = PaymentStatus.REFUNDED;
     }
 
     return this.orderRepo.save(order);

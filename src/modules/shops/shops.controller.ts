@@ -12,6 +12,7 @@ import {
   UploadedFile,
   ParseIntPipe,
   ForbiddenException,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/multer-options.interface';
@@ -33,6 +34,7 @@ import { ShopsService } from './shops.service';
 import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { QueryShopDto } from './dto/query-shop.dto';
+import { UpdateShopOrderShippingDto } from './dto/update-shop-order-shipping.dto';
 
 const shopUploadOptions: MulterOptions = {
   storage: diskStorage({
@@ -101,6 +103,26 @@ export class ShopsController {
     const p = Math.max(1, parseInt(page || '1', 10));
     const l = Math.max(1, Math.min(100, parseInt(limit || '20', 10)));
     const data = await this.shopsService.listMyShopOrders(userId, p, l);
+    return { success: true, data };
+  }
+
+  @Roles(AppRole.SELLER, AppRole.ADMIN)
+  @Get('me/orders/:id')
+  async myShopOrderDetail(@CurrentUser('sub') userSub: number, @Param('id', ParseUUIDPipe) id: string) {
+    const userId = Number(userSub);
+    const data = await this.shopsService.getMyShopOrderDetail(userId, id);
+    return { success: true, data };
+  }
+
+  @Roles(AppRole.SELLER, AppRole.ADMIN)
+  @Patch('me/orders/:id/shipping-status')
+  async updateMyShopOrderShippingStatus(
+    @CurrentUser('sub') userSub: number,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateShopOrderShippingDto,
+  ) {
+    const userId = Number(userSub);
+    const data = await this.shopsService.updateMyShopOrderShippingStatus(userId, id, dto.shippingStatus);
     return { success: true, data };
   }
 
