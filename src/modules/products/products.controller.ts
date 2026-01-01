@@ -36,6 +36,8 @@ import { AccessTokenGuard } from '../../common/guards/access-token.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { UserRole } from '../../modules/users/entities/user.entity';
 import { UpdateProductDto } from './dto/search-product.dto';
+import { Roles } from 'src/common/decorators/roles.decorator';
+import { AppRole } from 'src/common/constants/roles';
 
 // ==== cấu hình upload nhiều ảnh (vẫn lưu vào uploads/products) ====
 const uploadOptions: MulterOptions = {
@@ -86,7 +88,8 @@ export class ProductsController {
     const data = await this.productsService.findOnePublic(Number(id));
     return { success: true, data };
   }
-
+  
+  @Roles(AppRole.ADMIN)
   @Post()
   @UseInterceptors(FilesInterceptor('images', 10, uploadOptions))
   async create(
