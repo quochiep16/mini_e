@@ -10,9 +10,9 @@ import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { QueryUserDto } from './dto/query-user.dto';
-import { Roles } from 'src/common/decorators/roles.decorator';
-import { AppRole } from 'src/common/constants/roles';
-import { CurrentUser } from 'src/common/decorators/current-user.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { AppRole } from '../../common/constants/roles';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @Controller('users')
 export class UsersController {
