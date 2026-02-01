@@ -34,7 +34,7 @@ import { QueryProductsDto } from './dto/query-products.dto';
 
 import { AccessTokenGuard } from '../../common/guards/access-token.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { UserRole } from '../../modules/users/entities/user.entity';
+import { Gender, UserRole } from '../users/enums/user.enum'; 
 import { UpdateProductDto } from './dto/search-product.dto';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { AppRole } from 'src/common/constants/roles';

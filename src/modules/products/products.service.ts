@@ -15,7 +15,7 @@ import { ProductImage } from './entities/product-image.entity';
 import { ProductVariant } from './entities/product-variant.entity';
 import { Shop, ShopStatus } from '../../modules/shops/entities/shop.entity';
 import { ShopStats } from '../../modules/shops/entities/shop-stats.entity';
-import { UserRole } from '../../modules/users/entities/user.entity';
+import { Gender, UserRole } from '../users/enums/user.enum'; 
 import { UpdateProductDto } from './dto/search-product.dto';
 import { Category } from '../categories/entities/category.entity';
 import { QueryProductsDto } from './dto/query-products.dto';

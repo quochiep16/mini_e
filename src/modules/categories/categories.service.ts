@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Like, Not, Repository } from 'typeorm';
-import { UserRole } from '../users/entities/user.entity';
+import { Gender, UserRole } from '../users/enums/user.enum'; 
 import { Category } from './entities/category.entity';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';

@@ -12,7 +12,8 @@ import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 
-import { User, UserRole } from '../users/entities/user.entity';
+import { User} from '../users/entities/user.entity';
+import { Gender, UserRole } from '../users/enums/user.enum'; 
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RequestResetDto } from './dto/request-reset.dto';

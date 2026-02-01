@@ -9,18 +9,8 @@ import {
   DeleteDateColumn,
   OneToOne,
 } from 'typeorm';
-
-export enum Gender {
-  MALE = 'MALE',
-  FEMALE = 'FEMALE',
-  OTHER = 'OTHER',
-}
-
-export enum UserRole {
-  USER = 'USER',
-  SELLER = 'SELLER',
-  ADMIN = 'ADMIN',
-}
+// ✅ QUAN TRỌNG: Import Gender và UserRole từ file enum chung để đồng bộ với DTO
+import { Gender, UserRole } from '../enums/user.enum'; 
 
 @Entity('users')
 @Index('users_email_uq', ['email'], { unique: true })
@@ -32,7 +22,6 @@ export class User {
   @Column({ name: 'name', type: 'varchar', length: 120 })
   name: string;
 
-  // ✅ nullable + type rõ ràng (KHÔNG dùng string | null)
   @Column({ name: 'email', type: 'varchar', length: 320, nullable: true })
   email?: string;
 

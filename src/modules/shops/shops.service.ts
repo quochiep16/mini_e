@@ -13,7 +13,8 @@ import { ShopStats } from './entities/shop-stats.entity';
 import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { QueryShopDto } from './dto/query-shop.dto';
-import { User, UserRole } from '../../modules/users/entities/user.entity';
+import { User} from '../../modules/users/entities/user.entity';
+import { Gender, UserRole } from '../users/enums/user.enum'; 
 
 // ✅ thêm entities để join orders
 import { Order, OrderStatus, ShippingStatus } from '../../modules/orders/entities/order.entity';
