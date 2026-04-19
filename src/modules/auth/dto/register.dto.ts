@@ -3,7 +3,7 @@ import { IsEmail, IsNotEmpty, MinLength, Matches, ValidateIf } from 'class-valid
 export class RegisterDto {
   @IsNotEmpty({ message: 'Name không được để trống' })
   @MinLength(2, { message: 'Name phải có ít nhất 2 ký tự' })
-  name: string;
+  name!: string;
 
   // Có thể không nhập email nếu nhập phone
   @ValidateIf((o) => !o.phone)
@@ -22,8 +22,8 @@ export class RegisterDto {
   @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]).{8,}$/, {
     message: 'Password phải có ít nhất 8 ký tự, gồm chữ hoa, chữ thường, số và ký tự đặc biệt',
   })
-  password: string;
+  password!: string;
 
   @IsNotEmpty({ message: 'Confirm Password không được để trống' })
-  confirmPassword: string;
+  confirmPassword!: string;
 }

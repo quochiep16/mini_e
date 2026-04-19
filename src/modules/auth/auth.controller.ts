@@ -62,20 +62,22 @@ export class AuthController {
     const isProd = this.config.get<string>('NODE_ENV') === 'production';
     const weekMs = 7 * 24 * 60 * 60 * 1000;
 
-    res.cookie(cookieName, (result as any).refresh_token, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: isProd ? 'strict' : 'lax',
-      maxAge: weekMs,
-      path: '/',
-    });
+    const { refresh_token, ...safeResult } = result as any;
 
-    // FE: nếu data.user.isVerified === false hoặc data.verify.required === true
-    // => chuyển sang /verify
+    if (refresh_token) {
+      res.cookie(cookieName, refresh_token, {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: isProd ? 'strict' : 'lax',
+        maxAge: weekMs,
+        path: '/',
+      });
+    }
+
     return res.status(HttpStatus.OK).json({
       success: true,
       statusCode: HttpStatus.OK,
-      data: result,
+      data: safeResult,
     });
   }
 
@@ -95,6 +97,7 @@ export class AuthController {
     return { success: true, statusCode: HttpStatus.OK, data };
   }
 
+  @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(@Req() req: Request, @Res() res: Response) {
@@ -146,7 +149,6 @@ export class AuthController {
     return { success: true, statusCode: HttpStatus.OK, data };
   }
 
-  // resend OTP verify (email/phone)
   @Post('request-verify')
   @HttpCode(HttpStatus.OK)
   async requestVerify(@CurrentUser('sub') sub: string | number, @Body() dto?: RequestVerifyDto) {
@@ -159,11 +161,36 @@ export class AuthController {
 
   @Post('verify-account')
   @HttpCode(HttpStatus.OK)
-  async verifyAccount(@CurrentUser('sub') sub: string | number, @Body() dto: VerifyAccountDto) {
+  async verifyAccount(
+    @CurrentUser('sub') sub: string | number,
+    @Body() dto: VerifyAccountDto,
+    @Res() res: Response,
+  ) {
     const userId = Number(sub);
     if (!userId || Number.isNaN(userId)) throw new UnauthorizedException('Token không hợp lệ');
 
     const data = await this.authService.verifyAccountForUser(userId, dto.otp);
-    return { success: true, statusCode: HttpStatus.OK, data };
+
+    const cookieName = this.config.get<string>('REFRESH_COOKIE_NAME', 'refreshToken');
+    const isProd = this.config.get<string>('NODE_ENV') === 'production';
+    const weekMs = 7 * 24 * 60 * 60 * 1000;
+
+    const { refresh_token, ...safeData } = data as any;
+
+    if (refresh_token) {
+      res.cookie(cookieName, refresh_token, {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: isProd ? 'strict' : 'lax',
+        maxAge: weekMs,
+        path: '/',
+      });
+    }
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      statusCode: HttpStatus.OK,
+      data: safeData,
+    });
   }
 }

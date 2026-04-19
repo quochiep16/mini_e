@@ -5,7 +5,7 @@ export class InitOrders1700000005000 implements MigrationInterface {
 
   public async up(q: QueryRunner): Promise<void> {
     await q.query(`
-      CREATE TABLE IF NOT EXISTS orders (
+      CREATE TABLE orders (
         id CHAR(36) NOT NULL,
         user_id INT UNSIGNED NOT NULL,
         code VARCHAR(32) NOT NULL,
@@ -23,12 +23,13 @@ export class InitOrders1700000005000 implements MigrationInterface {
         PRIMARY KEY (id),
         UNIQUE KEY UQ_orders_code (code),
         KEY IDX_orders_user (user_id),
-        KEY IDX_orders_created_at (created_at)
+        KEY IDX_orders_created_at (created_at),
+        CONSTRAINT FK_orders_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT ON UPDATE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
     await q.query(`
-      CREATE TABLE IF NOT EXISTS order_items (
+      CREATE TABLE order_items (
         id CHAR(36) NOT NULL,
         order_id CHAR(36) NOT NULL,
         product_id INT UNSIGNED NOT NULL,
@@ -47,7 +48,7 @@ export class InitOrders1700000005000 implements MigrationInterface {
         updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
         PRIMARY KEY (id),
         KEY IDX_order_items_order (order_id),
-        CONSTRAINT FK_order_items_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+        CONSTRAINT FK_order_items_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE ON UPDATE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
   }

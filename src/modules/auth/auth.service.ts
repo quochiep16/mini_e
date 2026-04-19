@@ -12,8 +12,8 @@ import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 
-import { User} from '../users/entities/user.entity';
-import { Gender, UserRole } from '../users/enums/user.enum'; 
+import { User } from '../users/entities/user.entity';
+import { UserRole } from '../users/enums/user.enum';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RequestResetDto } from './dto/request-reset.dto';
@@ -27,27 +27,41 @@ import { SmsService } from '../sms/sms.service';
 type VerifyInfo = {
   required: true;
   via: 'email' | 'phone';
-  target: string; // masked
+  target: string;
   expiresAt: Date;
   sent: boolean;
   cooldownRemaining?: number;
 };
 
-export type LoginResult =
-  | { needRecover: true; identifier: string; via: 'email' | 'phone' }
-  | {
-      user: {
-        id: number;
-        name: string;
-        email: string | null;
-        phone: string | null;
-        role: UserRole;
-        isVerified: boolean;
-      };
-      access_token: string;
-      refresh_token: string;
-      verify?: VerifyInfo; // 👈 login xong chưa verify => có field này
-    };
+type AuthUserPayload = {
+  id: number;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  role: UserRole;
+  isVerified: boolean;
+};
+
+type NeedRecoverResult = {
+  needRecover: true;
+  identifier: string;
+  via: 'email' | 'phone';
+};
+
+type VerifiedLoginResult = {
+  user: AuthUserPayload;
+  access_token: string;
+  refresh_token: string;
+};
+
+type PendingVerifyLoginResult = {
+  user: AuthUserPayload;
+  access_token: string;
+  verificationOnly: true;
+  verify: VerifyInfo;
+};
+
+export type LoginResult = NeedRecoverResult | VerifiedLoginResult | PendingVerifyLoginResult;
 
 @Injectable()
 export class AuthService {
@@ -59,13 +73,14 @@ export class AuthService {
     private readonly smsSvc: SmsService,
   ) {}
 
-  // ========= Helpers =========
   private get pepper() {
     return this.config.get<string>('BCRYPT_PEPPER');
   }
+
   private get otpWindowMinutes() {
     return Number(this.config.get('OTP_WINDOW_MINUTES') ?? 5);
   }
+
   private get otpResendCooldownSec() {
     return Number(this.config.get('OTP_RESEND_COOLDOWN_SECONDS') ?? 60);
   }
@@ -90,10 +105,6 @@ export class AuthService {
     return v ? v.toLowerCase() : null;
   }
 
-  // VN normalize:
-  // 090xxxxxxx -> +8490xxxxxxx
-  // 84xxxxxxxxx -> +84xxxxxxxxx
-  // +84xxxxxxxxx giữ nguyên
   private normalizePhone(phone?: string | null) {
     const raw = (phone ?? '').trim();
     if (!raw) return null;
@@ -106,6 +117,21 @@ export class AuthService {
     if (digits.length >= 8 && digits.length <= 15) return `+${digits}`;
 
     throw new BadRequestException('Số điện thoại không hợp lệ');
+  }
+
+  private isDuplicateKeyError(error: any) {
+    return error?.code === 'ER_DUP_ENTRY' || error?.errno === 1062;
+  }
+
+  private buildUserPayload(user: User): AuthUserPayload {
+    return {
+      id: user.id,
+      name: user.name,
+      email: user.email ?? null,
+      phone: user.phone ?? null,
+      role: user.role,
+      isVerified: user.isVerified,
+    };
   }
 
   private requireEmail(user: User): string {
@@ -135,11 +161,20 @@ export class AuthService {
     const rtSecret = this.config.get<string>('REFRESH_TOKEN_SECRET', 'change_me_too');
     const rtExpires = this.config.get<string>('REFRESH_TOKEN_EXPIRES', '7d');
 
-    const payload = { sub: user.id, email: user.email, phone: user.phone, role: user.role };
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      isVerified: user.isVerified,
+    };
 
     const [access_token, refresh_token] = await Promise.all([
       this.jwt.signAsync(payload, { secret: atSecret, expiresIn: atExpires }),
-      this.jwt.signAsync({ sub: user.id }, { secret: rtSecret, expiresIn: rtExpires }),
+      this.jwt.signAsync(
+        { sub: user.id, isVerified: user.isVerified },
+        { secret: rtSecret, expiresIn: rtExpires },
+      ),
     ]);
 
     return { access_token, refresh_token };
@@ -148,11 +183,16 @@ export class AuthService {
   private async generateAccessToken(user: User) {
     const atSecret = this.config.get<string>('ACCESS_TOKEN_SECRET', 'change_me');
     const atExpires = this.config.get<string>('ACCESS_TOKEN_EXPIRES', '15m');
-    const payload = { sub: user.id, email: user.email, phone: user.phone, role: user.role };
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      isVerified: user.isVerified,
+    };
     return this.jwt.signAsync(payload, { secret: atSecret, expiresIn: atExpires });
   }
 
-  // Login cần nhìn cả bản ghi đã xoá mềm để “kẹp” luồng khôi phục
   private async validateUser(identifierRaw: string, password: string) {
     const raw = identifierRaw.trim();
     const byEmail = raw.includes('@');
@@ -167,7 +207,6 @@ export class AuthService {
       qb.where('u.email = :email', { email });
     } else {
       const phoneNorm = this.normalizePhone(raw);
-      // match raw OR normalized để không chết data cũ
       qb.where('u.phone = :p1', { p1: raw }).orWhere('u.phone = :p2', { p2: phoneNorm });
     }
 
@@ -181,18 +220,17 @@ export class AuthService {
     return user;
   }
 
-  // gửi OTP verify theo kênh (email/phone) + cooldown
   private async sendVerifyOtp(user: User, preferred: 'email' | 'phone'): Promise<VerifyInfo> {
     let via: 'email' | 'phone' = preferred;
 
-    // fallback nếu thiếu field
     if (via === 'email' && !user.email && user.phone) via = 'phone';
     if (via === 'phone' && !user.phone && user.email) via = 'email';
 
-    if (via === 'email' && !user.email) throw new BadRequestException('Tài khoản không có email để gửi OTP');
-    if (via === 'phone' && !user.phone) throw new BadRequestException('Tài khoản không có SĐT để gửi OTP');
+    if (via === 'email' && !user.email)
+      throw new BadRequestException('Tài khoản không có email để gửi OTP');
+    if (via === 'phone' && !user.phone)
+      throw new BadRequestException('Tài khoản không có SĐT để gửi OTP');
 
-    // cooldown
     if (user.timeOtp) {
       const now = Date.now();
       const lastSend = user.timeOtp.getTime() - this.otpWindowMinutes * 60 * 1000;
@@ -203,7 +241,10 @@ export class AuthService {
         return {
           required: true,
           via,
-          target: via === 'email' ? this.maskEmail(this.requireEmail(user)) : this.maskPhone(this.requirePhone(user)),
+          target:
+            via === 'email'
+              ? this.maskEmail(this.requireEmail(user))
+              : this.maskPhone(this.requirePhone(user)),
           expiresAt: user.timeOtp,
           sent: false,
           cooldownRemaining: remain,
@@ -236,14 +277,15 @@ export class AuthService {
     return {
       required: true,
       via,
-      target: via === 'email' ? this.maskEmail(this.requireEmail(user)) : this.maskPhone(this.requirePhone(user)),
+      target:
+        via === 'email'
+          ? this.maskEmail(this.requireEmail(user))
+          : this.maskPhone(this.requirePhone(user)),
       expiresAt,
       sent: true,
-      // nếu bạn muốn DEV trả otp thì tự thêm ở controller/service theo NODE_ENV
     };
   }
 
-  // ========= Register =========
   async register(dto: RegisterDto) {
     const email = this.normalizeEmail(dto.email ?? null);
     const phoneNorm = this.normalizePhone(dto.phone ?? null);
@@ -257,17 +299,38 @@ export class AuthService {
     }
 
     if (email) {
-      const exists = await this.usersRepo.findOne({ where: { email } });
-      if (exists) throw new ConflictException('Email đã tồn tại');
+      const existingEmail = await this.usersRepo
+        .createQueryBuilder('u')
+        .withDeleted()
+        .where('u.email = :email', { email })
+        .getOne();
+
+      if (existingEmail) {
+        if (existingEmail.deletedAt) {
+          throw new ConflictException(
+            'Email đã tồn tại nhưng tài khoản đang bị vô hiệu hoá. Vui lòng khôi phục tài khoản.',
+          );
+        }
+        throw new ConflictException('Email đã tồn tại');
+      }
     }
 
     if (phoneNorm) {
-      const existsPhone = await this.usersRepo
+      const existingPhone = await this.usersRepo
         .createQueryBuilder('u')
+        .withDeleted()
         .where('u.phone = :p1', { p1: (dto.phone ?? '').trim() })
         .orWhere('u.phone = :p2', { p2: phoneNorm })
         .getOne();
-      if (existsPhone) throw new ConflictException('Số điện thoại đã tồn tại');
+
+      if (existingPhone) {
+        if (existingPhone.deletedAt) {
+          throw new ConflictException(
+            'Số điện thoại đã tồn tại nhưng tài khoản đang bị vô hiệu hoá. Vui lòng khôi phục tài khoản.',
+          );
+        }
+        throw new ConflictException('Số điện thoại đã tồn tại');
+      }
     }
 
     const passwordHash = await this.hashPassword(dto.password);
@@ -281,22 +344,27 @@ export class AuthService {
       isVerified: false,
     };
 
-
     const user = this.usersRepo.create(userData);
-    const saved = await this.usersRepo.save(user);
 
-    return {
-      id: saved.id,
-      name: saved.name,
-      email: saved.email,
-      phone: saved.phone,
-      role: saved.role,
-      isVerified: saved.isVerified,
-      createdAt: saved.createdAt,
-    };
+    try {
+      const saved = await this.usersRepo.save(user);
+      return {
+        id: saved.id,
+        name: saved.name,
+        email: saved.email,
+        phone: saved.phone,
+        role: saved.role,
+        isVerified: saved.isVerified,
+        createdAt: saved.createdAt,
+      };
+    } catch (error: any) {
+      if (this.isDuplicateKeyError(error)) {
+        throw new ConflictException('Email hoặc số điện thoại đã tồn tại');
+      }
+      throw error;
+    }
   }
 
-  // ========= Login (kẹp luồng khôi phục + auto send OTP nếu chưa verify) =========
   async login(dto: LoginDto): Promise<LoginResult> {
     const identifier = (dto.email ?? dto.phone ?? '').trim();
     if (!identifier) throw new BadRequestException('Thiếu email hoặc số điện thoại');
@@ -314,34 +382,31 @@ export class AuthService {
 
     this.usersRepo.update({ id: user.id }, { lastLoginAt: new Date() }).catch(() => void 0);
 
-    const tokens = await this.generateTokens(user);
-
-    const result: any = {
-      ...tokens,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        isVerified: user.isVerified,
-      },
-    };
-
-    // ✅ chưa verify => tự gửi OTP theo kênh user dùng để login
     if (!user.isVerified) {
       const pref: 'email' | 'phone' = identifier.includes('@') ? 'email' : 'phone';
-      result.verify = await this.sendVerifyOtp(user, pref);
+      const access_token = await this.generateAccessToken(user);
+      const verify = await this.sendVerifyOtp(user, pref);
+
+      return {
+        access_token,
+        verificationOnly: true,
+        verify,
+        user: this.buildUserPayload(user),
+      };
     }
 
-    return result;
+    const tokens = await this.generateTokens(user);
+
+    return {
+      ...tokens,
+      user: this.buildUserPayload(user),
+    };
   }
 
-  // ========= Refresh (KHÔNG rotate refresh token) =========
   async refresh(refreshToken: string) {
     if (!refreshToken) throw new UnauthorizedException('Thiếu refresh token');
 
-    const secret = this.config.get<string>('REFRESH_TOKEN_SECRET', 'change_me');
+    const secret = this.config.get<string>('REFRESH_TOKEN_SECRET', 'change_me_too');
     let decoded: any;
     try {
       decoded = await this.jwt.verifyAsync(refreshToken, { secret });
@@ -349,31 +414,33 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token không hợp lệ');
     }
 
-    const user = await this.usersRepo.findOne({ where: { id: decoded.sub } });
-    if (!user) throw new UnauthorizedException('Không tìm thấy người dùng');
+    const user = await this.usersRepo
+      .createQueryBuilder('u')
+      .withDeleted()
+      .where('u.id = :id', { id: decoded.sub })
+      .getOne();
+
+    if (!user || user.deletedAt) {
+      throw new UnauthorizedException('Tài khoản không còn hoạt động');
+    }
+
+    if (!user.isVerified) {
+      throw new UnauthorizedException('Tài khoản chưa xác thực');
+    }
 
     const access_token = await this.generateAccessToken(user);
     return {
       access_token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        isVerified: user.isVerified,
-      },
+      user: this.buildUserPayload(user),
     };
   }
 
-  // ========= Forgot Password (email) =========
   async requestPasswordReset(dto: RequestResetDto) {
     const email = dto.email.trim().toLowerCase();
     const user = await this.usersRepo.findOne({ where: { email } });
 
     if (!user) throw new NotFoundException('Email không tồn tại');
 
-    // cooldown resend
     if (user.timeOtp) {
       const now = Date.now();
       const lastSend = user.timeOtp.getTime() - this.otpWindowMinutes * 60 * 1000;
@@ -392,7 +459,11 @@ export class AuthService {
 
     await this.emailSvc.sendPasswordResetCode(this.requireEmail(user), otp);
 
-    return { email: user.email, otp, expiresAt: user.timeOtp };
+    return {
+      sent: true,
+      email: this.maskEmail(this.requireEmail(user)),
+      expiresAt: user.timeOtp,
+    };
   }
 
   async resetPassword(dto: ResetPasswordDto) {
@@ -428,7 +499,6 @@ export class AuthService {
     return { reset: true };
   }
 
-  // ========= Recover (email/phone) =========
   async requestAccountRecover(dto: AccountRecoverRequestDto) {
     const raw = dto.email.trim();
     const byEmail = raw.includes('@');
@@ -447,7 +517,6 @@ export class AuthService {
       return { sent: true };
     }
 
-    // cooldown
     if (user.timeOtp) {
       const now = Date.now();
       const lastSend = user.timeOtp.getTime() - this.otpWindowMinutes * 60 * 1000;
@@ -461,7 +530,10 @@ export class AuthService {
     const otpHash = await this.hashPassword(otp);
     const expiresAt = new Date(Date.now() + this.otpWindowMinutes * 60 * 1000);
 
-    await this.usersRepo.update({ id: user.id }, { otp: otpHash as any, timeOtp: expiresAt as any });
+    await this.usersRepo.update(
+      { id: user.id },
+      { otp: otpHash as any, timeOtp: expiresAt as any },
+    );
 
     if (byEmail) {
       await this.emailSvc.sendActivationCode(this.requireEmail(user), otp);
@@ -518,7 +590,6 @@ export class AuthService {
     return { restored: true, passwordChanged: true };
   }
 
-  // ========= Verify via access_token =========
   async requestVerifyForUser(userId: number, via?: 'email' | 'phone') {
     const user = await this.usersRepo.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('Không tìm thấy người dùng');
@@ -559,6 +630,12 @@ export class AuthService {
     user.timeOtp = null as any;
     await this.usersRepo.save(user);
 
-    return { verified: true };
+    const tokens = await this.generateTokens(user);
+
+    return {
+      verified: true,
+      ...tokens,
+      user: this.buildUserPayload(user),
+    };
   }
 }

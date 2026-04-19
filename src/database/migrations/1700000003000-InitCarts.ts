@@ -4,32 +4,32 @@ export class InitCarts1700000003000 implements MigrationInterface {
   name = 'InitCarts1700000003000';
 
   public async up(q: QueryRunner): Promise<void> {
-    // carts
     await q.query(`
-      CREATE TABLE IF NOT EXISTS carts (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        userId INT NOT NULL,
+      CREATE TABLE carts (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        userId INT UNSIGNED NOT NULL,
         itemsCount INT NOT NULL DEFAULT 0,
         itemsQuantity INT NOT NULL DEFAULT 0,
         subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
         currency VARCHAR(10) NOT NULL DEFAULT 'VND',
         createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY UQ_carts_user (userId)
+        UNIQUE KEY UQ_carts_user (userId),
+        CONSTRAINT FK_carts_user FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
-    // cart_items
     await q.query(`
-      CREATE TABLE IF NOT EXISTS cart_items (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        cartId INT NOT NULL,
-        productId INT NOT NULL,
-        variantId INT NULL,
+      CREATE TABLE cart_items (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        cartId INT UNSIGNED NOT NULL,
+        productId INT UNSIGNED NOT NULL,
+        variantId INT UNSIGNED NOT NULL,
         title VARCHAR(200) NOT NULL,
         variantName VARCHAR(200) NULL,
         sku VARCHAR(80) NULL,
-        imageId INT NULL,
+        imageId INT UNSIGNED NULL,
+        imageUrl VARCHAR(500) NULL,
         price DECIMAL(12,2) NOT NULL,
         quantity INT NOT NULL DEFAULT 1,
         value1 VARCHAR(100) NULL,
@@ -39,12 +39,15 @@ export class InitCarts1700000003000 implements MigrationInterface {
         value5 VARCHAR(100) NULL,
         createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
         KEY IDX_cart (cartId),
-        UNIQUE KEY UQ_cartitem_unique_line (cartId, productId, variantId),
-        CONSTRAINT FK_cart_items_cart
-          FOREIGN KEY (cartId) REFERENCES carts(id)
-          ON DELETE CASCADE
+        KEY IDX_cart_product (productId),
+        KEY IDX_cart_variant (variantId),
+        KEY IDX_cart_image (imageId),
+        UNIQUE KEY UQ_cartitem_unique_variant (cartId, variantId),
+        CONSTRAINT FK_cart_items_cart FOREIGN KEY (cartId) REFERENCES carts(id) ON DELETE CASCADE ON UPDATE CASCADE,
+        CONSTRAINT FK_cart_items_product FOREIGN KEY (productId) REFERENCES products(id) ON DELETE CASCADE ON UPDATE CASCADE,
+        CONSTRAINT FK_cart_items_variant FOREIGN KEY (variantId) REFERENCES product_variants(id) ON DELETE CASCADE ON UPDATE CASCADE,
+        CONSTRAINT FK_cart_items_image FOREIGN KEY (imageId) REFERENCES product_images(id) ON DELETE SET NULL ON UPDATE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
   }

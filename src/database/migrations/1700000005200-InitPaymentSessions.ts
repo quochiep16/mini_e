@@ -5,7 +5,7 @@ export class InitPaymentSessions1700000005200 implements MigrationInterface {
 
   public async up(q: QueryRunner): Promise<void> {
     await q.query(`
-      CREATE TABLE IF NOT EXISTS payment_sessions (
+      CREATE TABLE payment_sessions (
         id CHAR(36) NOT NULL,
         user_id INT UNSIGNED NOT NULL,
         code VARCHAR(32) NOT NULL,
@@ -20,7 +20,8 @@ export class InitPaymentSessions1700000005200 implements MigrationInterface {
         updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
         PRIMARY KEY (id),
         UNIQUE KEY UQ_payment_sessions_code (code),
-        KEY IDX_payment_sessions_user (user_id)
+        KEY IDX_payment_sessions_user (user_id),
+        CONSTRAINT FK_payment_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT ON UPDATE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
   }
