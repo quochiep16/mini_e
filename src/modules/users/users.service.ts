@@ -1,4 +1,3 @@
-// users.service.ts
 import {
   Injectable,
   ConflictException,
@@ -6,15 +5,16 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DeepPartial, Repository } from 'typeorm';
+import { DeepPartial, Not, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
-import { User} from './entities/user.entity';
-import { Gender, UserRole } from '../users/enums/user.enum'; 
+import { Cron, CronExpression } from '@nestjs/schedule';
+
+import { User } from './entities/user.entity';
+import { UserRole } from './enums/user.enum';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { QueryUserDto } from './dto/query-user.dto';
-import { Cron, CronExpression } from '@nestjs/schedule';
 
 @Injectable()
 export class UsersService {
@@ -31,13 +31,12 @@ export class UsersService {
     );
   }
 
-  private normalizeEmail(email?: string) {
+  private normalizeEmail(email?: string): string | undefined {
     const v = (email ?? '').trim();
     return v ? v.toLowerCase() : undefined;
   }
 
-  // VN normalize giống phần auth
-  private normalizePhone(phone?: string) {
+  private normalizePhone(phone?: string): string | undefined {
     const raw = (phone ?? '').trim();
     if (!raw) return undefined;
 
@@ -51,46 +50,55 @@ export class UsersService {
     throw new BadRequestException('Số điện thoại không hợp lệ');
   }
 
-  async create(dto: CreateUserDto): Promise<User> {
+  private sanitizeUser<T extends Partial<User>>(user: T | null | undefined) {
+    if (!user) return user;
+    const { passwordHash, otp, timeOtp, ...safe } = user as any;
+    return safe;
+  }
+
+  private async findActiveEntityById(id: number): Promise<User> {
+    const user = await this.repo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException('User không tồn tại');
+    return user;
+  }
+
+  async create(dto: CreateUserDto) {
     const email = this.normalizeEmail(dto.email);
     const phone = this.normalizePhone(dto.phone);
 
-    // Nếu DTO của bạn bắt buộc email thì đoạn này không cần,
-    // nhưng để đồng bộ hệ thống (email/phone có thể thiếu) thì giữ lại:
     if (!email && !phone) {
       throw new BadRequestException('Phải nhập email hoặc số điện thoại');
     }
 
-    // Check trùng email
     if (email) {
       const exists = await this.repo.findOne({
-        where: { email },
+        where: { email } as any,
         withDeleted: true,
       });
-      if (exists && !exists.deletedAt) throw new ConflictException('Email đã tồn tại');
+      if (exists) {
+        throw new ConflictException('Email đã tồn tại');
+      }
     }
 
-    // Check trùng phone
     if (phone) {
-      const existsPhone = await this.repo.findOne({
+      const exists = await this.repo.findOne({
         where: { phone } as any,
         withDeleted: true,
       });
-      if (existsPhone && !existsPhone.deletedAt)
+      if (exists) {
         throw new ConflictException('Số điện thoại đã tồn tại');
+      }
     }
 
-    // hash password
     const rounds = Number(this.config.get('BCRYPT_SALT_ROUNDS') ?? 12);
     const pepper = this.config.get<string>('BCRYPT_PEPPER');
     const toHash = pepper ? dto.password + pepper : dto.password;
     const passwordHash = await bcrypt.hash(toHash, rounds);
 
-    // ✅ Quan trọng: DeepPartial<User> để TS không match nhầm overload array
     const data: DeepPartial<User> = {
       name: dto.name.trim(),
-      email, // undefined nếu rỗng
-      phone, // undefined nếu rỗng
+      email,
+      phone,
       passwordHash,
       avatarUrl: dto.avatarUrl?.trim() || undefined,
       birthday: dto.birthday ?? undefined,
@@ -103,31 +111,29 @@ export class UsersService {
 
     try {
       const saved = await this.repo.save(entity);
-      return this.repo.findOneByOrFail({ id: saved.id }); // không lộ passwordHash
+      return this.findById(saved.id);
     } catch (e: any) {
       if (this.isUniqueViolation(e)) {
-        // MySQL duplicate message thường có key name -> map gọn
         const msg = String(e?.message ?? '');
-        if (/phone/i.test(msg)) throw new ConflictException('Số điện thoại đã tồn tại');
+        if (/phone/i.test(msg)) {
+          throw new ConflictException('Số điện thoại đã tồn tại');
+        }
         throw new ConflictException('Email đã tồn tại');
       }
       throw e;
     }
   }
 
-  async findById(id: number): Promise<User> {
-    // Mặc định KHÔNG trả bản ghi đã xoá mềm
-    const user = await this.repo.findOne({ where: { id } });
-    if (!user) throw new NotFoundException('User không tồn tại');
-    return user;
+  async findById(id: number) {
+    const user = await this.findActiveEntityById(id);
+    return this.sanitizeUser(user);
   }
 
   async findAll(q: QueryUserDto) {
     const page = Math.max(Number(q.page ?? 1), 1);
     const limit = Math.min(Math.max(Number(q.limit ?? 20), 1), 100);
-    const qb = this.repo.createQueryBuilder('u'); // mặc định không include deleted
+    const qb = this.repo.createQueryBuilder('u');
 
-    // search by name / email / phone
     if (q.search) {
       const kw = `%${q.search}%`;
       qb.andWhere('(u.name LIKE :kw OR u.email LIKE :kw OR u.phone LIKE :kw)', {
@@ -136,9 +142,9 @@ export class UsersService {
     }
 
     const sortBy = q.sortBy ?? 'createdAt';
-    const sortOrder = (q.sortOrder ?? 'DESC').toUpperCase() as 'ASC' | 'DESC';
+    const rawSortOrder = String(q.sortOrder ?? 'DESC').toUpperCase();
+    const sortOrder: 'ASC' | 'DESC' = rawSortOrder === 'ASC' ? 'ASC' : 'DESC';
 
-    // chống sortBy bậy (tránh SQL injection)
     const allowSort = new Set([
       'id',
       'name',
@@ -157,34 +163,79 @@ export class UsersService {
       .take(limit);
 
     const [items, total] = await qb.getManyAndCount();
+
     return {
-      items,
-      meta: { page, limit, total, pageCount: Math.max(Math.ceil(total / limit), 1) },
+      items: items.map((item) => this.sanitizeUser(item)),
+      meta: {
+        page,
+        limit,
+        total,
+        pageCount: Math.max(Math.ceil(total / limit), 1),
+      },
     };
   }
 
-  async update(id: number, dto: UpdateUserDto): Promise<User> {
-    const user = await this.findById(id); // nếu đã xoá mềm sẽ ném NotFound
+  async update(id: number, dto: UpdateUserDto) {
+    const user = await this.findActiveEntityById(id);
+
+    let nextEmail = user.email;
+    let nextPhone = user.phone;
 
     if ((dto as any).email !== undefined) {
-      const e = this.normalizeEmail(String((dto as any).email));
-      (dto as any).email = e; // có thể undefined => set về NULL? (ở đây giữ undefined để không đổi)
+      nextEmail = this.normalizeEmail((dto as any).email);
     }
 
     if ((dto as any).phone !== undefined) {
-      const p = this.normalizePhone(String((dto as any).phone));
-      (dto as any).phone = p;
+      nextPhone = this.normalizePhone((dto as any).phone);
+    }
+
+    if (!nextEmail && !nextPhone) {
+      throw new BadRequestException('User phải có ít nhất email hoặc số điện thoại');
+    }
+
+    if (nextEmail && nextEmail !== user.email) {
+      const existed = await this.repo.findOne({
+        where: {
+          email: nextEmail,
+          id: Not(id),
+        } as any,
+        withDeleted: true,
+      });
+
+      if (existed) {
+        throw new ConflictException('Email đã tồn tại');
+      }
+    }
+
+    if (nextPhone && nextPhone !== user.phone) {
+      const existed = await this.repo.findOne({
+        where: {
+          phone: nextPhone,
+          id: Not(id),
+        } as any,
+        withDeleted: true,
+      });
+
+      if (existed) {
+        throw new ConflictException('Số điện thoại đã tồn tại');
+      }
     }
 
     if (dto.password) {
       const rounds = Number(this.config.get('BCRYPT_SALT_ROUNDS') ?? 12);
       const pepper = this.config.get<string>('BCRYPT_PEPPER');
       const toHash = pepper ? dto.password + pepper : dto.password;
-      (user as any).passwordHash = await bcrypt.hash(toHash, rounds);
-      delete (dto as any).password;
+      user.passwordHash = await bcrypt.hash(toHash, rounds);
     }
 
-    Object.assign(user, dto);
+    if (dto.name !== undefined) user.name = dto.name.trim();
+    if ((dto as any).email !== undefined) user.email = nextEmail;
+    if ((dto as any).phone !== undefined) user.phone = nextPhone;
+    if (dto.avatarUrl !== undefined) user.avatarUrl = dto.avatarUrl?.trim() || undefined;
+    if (dto.birthday !== undefined) user.birthday = dto.birthday ?? undefined;
+    if (dto.gender !== undefined) user.gender = dto.gender ?? undefined;
+    if (dto.isVerified !== undefined) user.isVerified = dto.isVerified;
+    if (dto.role !== undefined) user.role = dto.role;
 
     try {
       await this.repo.save(user);
@@ -192,39 +243,79 @@ export class UsersService {
     } catch (e: any) {
       if (this.isUniqueViolation(e)) {
         const msg = String(e?.message ?? '');
-        if (/phone/i.test(msg)) throw new ConflictException('Số điện thoại đã tồn tại');
+        if (/phone/i.test(msg)) {
+          throw new ConflictException('Số điện thoại đã tồn tại');
+        }
         throw new ConflictException('Email đã tồn tại');
       }
       throw e;
     }
   }
 
-  // 🔧 Soft delete có kiểm tra trạng thái
   async softDelete(id: number): Promise<void> {
-    // Tìm cả đã xoá để biết tình trạng
-    const existed = await this.repo.findOne({ where: { id }, withDeleted: true });
-    if (!existed) throw new NotFoundException('User không tồn tại');
+    const existed = await this.repo.findOne({
+      where: { id },
+      withDeleted: true,
+    });
 
-    // Nếu đã xoá mềm trước đó → coi như “không tồn tại”
-    if (existed.deletedAt) throw new NotFoundException('User không tồn tại');
+    if (!existed) {
+      throw new NotFoundException('User không tồn tại');
+    }
+
+    if (existed.deletedAt) {
+      throw new NotFoundException('User không tồn tại');
+    }
 
     const res = await this.repo.softDelete(id);
-    if (!res.affected) throw new NotFoundException('User không tồn tại');
+    if (!res.affected) {
+      throw new NotFoundException('User không tồn tại');
+    }
   }
 
-  // 🔧 Restore có kiểm tra trạng thái
   async restore(id: number): Promise<void> {
-    const existed = await this.repo.findOne({ where: { id }, withDeleted: true });
-    if (!existed) throw new NotFoundException('User không tồn tại');
-    if (!existed.deletedAt) return; // idempotent
+    const existed = await this.repo.findOne({
+      where: { id },
+      withDeleted: true,
+    });
+
+    if (!existed) {
+      throw new NotFoundException('User không tồn tại');
+    }
+
+    if (!existed.deletedAt) return;
 
     const res = await this.repo.restore(id);
-    if (!res.affected) throw new NotFoundException('User không tồn tại');
+    if (!res.affected) {
+      throw new NotFoundException('User không tồn tại');
+    }
   }
 
   async hardDelete(id: number): Promise<void> {
-    const res = await this.repo.delete(id);
-    if (!res.affected) throw new NotFoundException('User không tồn tại');
+    const existed = await this.repo.findOne({
+      where: { id },
+      withDeleted: true,
+    });
+
+    if (!existed) {
+      throw new NotFoundException('User không tồn tại');
+    }
+
+    if (!existed.deletedAt) {
+      throw new BadRequestException(
+        'Chỉ được xóa cứng user đã xóa mềm trước đó',
+      );
+    }
+
+    try {
+      const res = await this.repo.delete(id);
+      if (!res.affected) {
+        throw new NotFoundException('User không tồn tại');
+      }
+    } catch (e: any) {
+      throw new BadRequestException(
+        'Không thể xóa cứng user vì còn dữ liệu liên quan',
+      );
+    }
   }
 
   async findAllDeleted(q: QueryUserDto) {
@@ -234,17 +325,28 @@ export class UsersService {
     const qb = this.repo
       .createQueryBuilder('u')
       .withDeleted()
-      .where('u.deletedAt IS NOT NULL'); // chỉ lấy bản ghi đã xoá
+      .where('u.deletedAt IS NOT NULL');
 
     if (q.search) {
       const kw = `%${q.search}%`;
-      qb.andWhere('(u.name LIKE :kw OR u.email LIKE :kw OR u.phone LIKE :kw)', { kw });
+      qb.andWhere('(u.name LIKE :kw OR u.email LIKE :kw OR u.phone LIKE :kw)', {
+        kw,
+      });
     }
 
     const sortBy = q.sortBy ?? 'deletedAt';
-    const sortOrder = (q.sortOrder ?? 'DESC').toUpperCase() as 'ASC' | 'DESC';
+    const rawSortOrder = String(q.sortOrder ?? 'DESC').toUpperCase();
+    const sortOrder: 'ASC' | 'DESC' = rawSortOrder === 'ASC' ? 'ASC' : 'DESC';
 
-    const allowSort = new Set(['deletedAt', 'createdAt', 'updatedAt', 'id', 'name', 'email', 'phone']);
+    const allowSort = new Set([
+      'deletedAt',
+      'createdAt',
+      'updatedAt',
+      'id',
+      'name',
+      'email',
+      'phone',
+    ]);
     const safeSortBy = allowSort.has(sortBy) ? sortBy : 'deletedAt';
 
     qb.orderBy(`u.${safeSortBy}`, sortOrder)
@@ -252,27 +354,40 @@ export class UsersService {
       .take(limit);
 
     const [items, total] = await qb.getManyAndCount();
+
     return {
-      items,
-      meta: { page, limit, total, pageCount: Math.max(Math.ceil(total / limit), 1) },
+      items: items.map((item) => this.sanitizeUser(item)),
+      meta: {
+        page,
+        limit,
+        total,
+        pageCount: Math.max(Math.ceil(total / limit), 1),
+      },
     };
   }
 
-  // Mặc định: 30 ngày
   private graceDays() {
     return Number(this.config.get('ACCOUNT_DELETE_GRACE_DAYS') ?? 30);
   }
 
-  @Cron(CronExpression.EVERY_DAY_AT_3AM) // chạy 03:00 mỗi ngày
+  @Cron(CronExpression.EVERY_DAY_AT_3AM)
   async hardDeleteExpired() {
     const days = this.graceDays();
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-    await this.repo
-      .createQueryBuilder()
-      .delete()
-      .from(User)
-      .where('deletedAt IS NOT NULL AND deletedAt < :cutoff', { cutoff })
-      .execute();
+    const expiredUsers = await this.repo
+      .createQueryBuilder('u')
+      .withDeleted()
+      .where('u.deletedAt IS NOT NULL')
+      .andWhere('u.deletedAt < :cutoff', { cutoff })
+      .getMany();
+
+    for (const user of expiredUsers) {
+      try {
+        await this.repo.delete(user.id);
+      } catch {
+        //
+      }
+    }
   }
 }
