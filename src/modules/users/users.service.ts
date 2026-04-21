@@ -3,6 +3,7 @@ import {
   ConflictException,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DeepPartial, Not, Repository } from 'typeorm';
@@ -11,7 +12,7 @@ import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 
 import { User } from './entities/user.entity';
-import { UserRole } from './enums/user.enum';
+import { UserRole } from '../users/enums/user.enum';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { QueryUserDto } from './dto/query-user.dto';
@@ -23,6 +24,14 @@ export class UsersService {
     private readonly config: ConfigService,
   ) {}
 
+  private get ROOT_ADMIN_EMAIL(): string {
+    return this.config.get<string>('ROOT_ADMIN_EMAIL') || 'admin123@admin.com';
+  }
+
+  private get ROOT_ADMIN_CODE(): string {
+    return this.config.get<string>('ROOT_ADMIN_CODE') || 'ROOT_ADMIN';
+  }
+
   private isUniqueViolation(e: any) {
     return (
       e?.code === 'ER_DUP_ENTRY' ||
@@ -31,12 +40,12 @@ export class UsersService {
     );
   }
 
-  private normalizeEmail(email?: string): string | undefined {
+  private normalizeEmail(email?: string) {
     const v = (email ?? '').trim();
     return v ? v.toLowerCase() : undefined;
   }
 
-  private normalizePhone(phone?: string): string | undefined {
+  private normalizePhone(phone?: string) {
     const raw = (phone ?? '').trim();
     if (!raw) return undefined;
 
@@ -52,13 +61,52 @@ export class UsersService {
 
   private sanitizeUser<T extends Partial<User>>(user: T | null | undefined) {
     if (!user) return user;
-    const { passwordHash, otp, timeOtp, ...safe } = user as any;
+    const {
+      passwordHash,
+      otp,
+      timeOtp,
+      systemCode,
+      ...safe
+    } = user as any;
     return safe;
+  }
+
+  private isRootAdmin(user: Partial<User> | null | undefined) {
+    return !!user && (
+      user.isSystem === true ||
+      user.systemCode === this.ROOT_ADMIN_CODE ||
+      user.email === this.ROOT_ADMIN_EMAIL
+    );
   }
 
   private async findActiveEntityById(id: number): Promise<User> {
     const user = await this.repo.findOne({ where: { id } });
     if (!user) throw new NotFoundException('User không tồn tại');
+    return user;
+  }
+
+  private async assertNotRootAdminTarget(id: number) {
+    const user = await this.repo.findOne({
+      where: { id },
+      withDeleted: true,
+      select: [
+        'id',
+        'email',
+        'role',
+        'isSystem',
+        'systemCode',
+        'deletedAt',
+      ] as any,
+    });
+
+    if (!user) {
+      throw new NotFoundException('User không tồn tại');
+    }
+
+    if (this.isRootAdmin(user)) {
+      throw new ForbiddenException('Không được chỉnh sửa tài khoản admin gốc');
+    }
+
     return user;
   }
 
@@ -75,17 +123,17 @@ export class UsersService {
         where: { email } as any,
         withDeleted: true,
       });
-      if (exists) {
+      if (exists && !exists.deletedAt) {
         throw new ConflictException('Email đã tồn tại');
       }
     }
 
     if (phone) {
-      const exists = await this.repo.findOne({
+      const existsPhone = await this.repo.findOne({
         where: { phone } as any,
         withDeleted: true,
       });
-      if (exists) {
+      if (existsPhone && !existsPhone.deletedAt) {
         throw new ConflictException('Số điện thoại đã tồn tại');
       }
     }
@@ -105,6 +153,8 @@ export class UsersService {
       gender: dto.gender ?? undefined,
       isVerified: dto.isVerified ?? false,
       role: dto.role ?? UserRole.USER,
+      isSystem: false,
+      systemCode: undefined,
     };
 
     const entity = this.repo.create(data);
@@ -117,6 +167,9 @@ export class UsersService {
         const msg = String(e?.message ?? '');
         if (/phone/i.test(msg)) {
           throw new ConflictException('Số điện thoại đã tồn tại');
+        }
+        if (/system_code/i.test(msg)) {
+          throw new ConflictException('systemCode đã tồn tại');
         }
         throw new ConflictException('Email đã tồn tại');
       }
@@ -152,6 +205,7 @@ export class UsersService {
       'phone',
       'role',
       'isVerified',
+      'isSystem',
       'createdAt',
       'updatedAt',
       'lastLoginAt',
@@ -176,6 +230,8 @@ export class UsersService {
   }
 
   async update(id: number, dto: UpdateUserDto) {
+    await this.assertNotRootAdminTarget(id);
+
     const user = await this.findActiveEntityById(id);
 
     let nextEmail = user.email;
@@ -202,7 +258,7 @@ export class UsersService {
         withDeleted: true,
       });
 
-      if (existed) {
+      if (existed && !existed.deletedAt) {
         throw new ConflictException('Email đã tồn tại');
       }
     }
@@ -216,7 +272,7 @@ export class UsersService {
         withDeleted: true,
       });
 
-      if (existed) {
+      if (existed && !existed.deletedAt) {
         throw new ConflictException('Số điện thoại đã tồn tại');
       }
     }
@@ -253,6 +309,8 @@ export class UsersService {
   }
 
   async softDelete(id: number): Promise<void> {
+    await this.assertNotRootAdminTarget(id);
+
     const existed = await this.repo.findOne({
       where: { id },
       withDeleted: true,
@@ -273,6 +331,8 @@ export class UsersService {
   }
 
   async restore(id: number): Promise<void> {
+    await this.assertNotRootAdminTarget(id);
+
     const existed = await this.repo.findOne({
       where: { id },
       withDeleted: true,
@@ -291,6 +351,8 @@ export class UsersService {
   }
 
   async hardDelete(id: number): Promise<void> {
+    await this.assertNotRootAdminTarget(id);
+
     const existed = await this.repo.findOne({
       where: { id },
       withDeleted: true,
@@ -301,9 +363,7 @@ export class UsersService {
     }
 
     if (!existed.deletedAt) {
-      throw new BadRequestException(
-        'Chỉ được xóa cứng user đã xóa mềm trước đó',
-      );
+      throw new BadRequestException('Chỉ được xóa cứng user đã xóa mềm trước đó');
     }
 
     try {
@@ -311,7 +371,7 @@ export class UsersService {
       if (!res.affected) {
         throw new NotFoundException('User không tồn tại');
       }
-    } catch (e: any) {
+    } catch {
       throw new BadRequestException(
         'Không thể xóa cứng user vì còn dữ liệu liên quan',
       );
@@ -383,6 +443,8 @@ export class UsersService {
       .getMany();
 
     for (const user of expiredUsers) {
+      if (this.isRootAdmin(user)) continue;
+
       try {
         await this.repo.delete(user.id);
       } catch {

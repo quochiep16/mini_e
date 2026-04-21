@@ -11,6 +11,7 @@ import {
   Res,
   HttpStatus,
 } from '@nestjs/common';
+
 import type { Response } from 'express';
 
 import { UsersService } from './users.service';
@@ -45,9 +46,10 @@ export class UsersController {
   ) {
     const userId = Number(sub);
 
-    // User tự sửa hồ sơ thì không được sửa quyền / trạng thái verify
     delete (dto as any).role;
     delete (dto as any).isVerified;
+    delete (dto as any).isSystem;
+    delete (dto as any).systemCode;
 
     const result = await this.usersService.update(userId, dto);
 
@@ -94,7 +96,6 @@ export class UsersController {
     });
   }
 
-  // để route tĩnh này lên trước route :id cho rõ ràng
   @Roles(AppRole.ADMIN)
   @Get('deleted/all')
   async findAllDeleted(@Query() q: QueryUserDto, @Res() res: Response) {

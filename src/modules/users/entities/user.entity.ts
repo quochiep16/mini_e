@@ -9,18 +9,18 @@ import {
   DeleteDateColumn,
   OneToOne,
 } from 'typeorm';
-// ✅ QUAN TRỌNG: Import Gender và UserRole từ file enum chung để đồng bộ với DTO
-import { Gender, UserRole } from '../enums/user.enum'; 
+import { Gender, UserRole } from '../enums/user.enum';
 
 @Entity('users')
 @Index('users_email_uq', ['email'], { unique: true })
 @Index('users_phone_uq', ['phone'], { unique: true })
+@Index('users_system_code_uq', ['systemCode'], { unique: true })
 export class User {
   @PrimaryGeneratedColumn({ type: 'int', unsigned: true })
-  id: number;
+  id!: number;
 
   @Column({ name: 'name', type: 'varchar', length: 120 })
-  name: string;
+  name!: string;
 
   @Column({ name: 'email', type: 'varchar', length: 320, nullable: true })
   email?: string;
@@ -29,7 +29,7 @@ export class User {
   phone?: string;
 
   @Column({ name: 'password_hash', type: 'varchar', length: 255, select: false })
-  passwordHash: string;
+  passwordHash!: string;
 
   @Column({ type: 'text', nullable: true })
   avatarUrl?: string;
@@ -47,19 +47,25 @@ export class User {
   timeOtp?: Date;
 
   @Column({ type: 'boolean', default: false })
-  isVerified: boolean;
+  isVerified!: boolean;
 
   @Column({ type: 'enum', enum: UserRole, default: UserRole.USER })
-  role: UserRole;
+  role!: UserRole;
+
+  @Column({ name: 'is_system', type: 'boolean', default: false })
+  isSystem!: boolean;
+
+  @Column({ name: 'system_code', type: 'varchar', length: 50, nullable: true })
+  systemCode?: string;
 
   @Column({ type: 'datetime', nullable: true })
   lastLoginAt?: Date;
 
   @CreateDateColumn()
-  createdAt: Date;
+  createdAt!: Date;
 
   @UpdateDateColumn()
-  updatedAt: Date;
+  updatedAt!: Date;
 
   @DeleteDateColumn({ nullable: true })
   deletedAt?: Date;
