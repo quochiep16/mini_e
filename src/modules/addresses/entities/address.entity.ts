@@ -3,44 +3,51 @@ import {
   CreateDateColumn,
   Entity,
   Index,
+  JoinColumn,
+  ManyToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { User } from '../../users/entities/user.entity';
 
 @Entity('user_addresses')
 @Index('IDX_user_addresses_user', ['userId'])
 export class Address {
-  @PrimaryGeneratedColumn()
-  id: number;
+  @PrimaryGeneratedColumn({ type: 'int', unsigned: true })
+  id!: number;
 
-  @Column({ type: 'int', nullable: false })
-  userId: number; // mapped -> user_id
+  @Column({ name: 'user_id', type: 'int', unsigned: true, nullable: false })
+  userId!: number;
 
-  @Column({ type: 'varchar', length: 120 })
-  fullName: string;
+  @ManyToOne(() => User, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'user_id', referencedColumnName: 'id' })
+  user?: User;
 
-  @Column({ type: 'varchar', length: 20 })
-  phone: string;
+  @Column({ name: 'full_name', type: 'varchar', length: 120 })
+  fullName!: string;
 
-  @Column({ type: 'varchar', length: 300 })
-  formattedAddress: string;
+  @Column({ name: 'phone', type: 'varchar', length: 20 })
+  phone!: string;
 
-  @Column({ type: 'varchar', length: 128, nullable: true })
-  placeId: string | null;
+  @Column({ name: 'formatted_address', type: 'varchar', length: 300 })
+  formattedAddress!: string;
 
-  // MySQL DECIMAL -> nhận về dạng string
-  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
-  lat: string | null;
+  @Column({ name: 'place_id', type: 'varchar', length: 128, nullable: true })
+  placeId?: string;
 
-  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
-  lng: string | null;
+  // MySQL DECIMAL khi đọc ra thường là string
+  @Column({ name: 'lat', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  lat?: string;
 
-  @Column({ type: 'tinyint', width: 1, default: 0 })
-  isDefault: boolean;
+  @Column({ name: 'lng', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  lng?: string;
 
-  @CreateDateColumn({ type: 'datetime' })
-  createdAt: Date;
+  @Column({ name: 'is_default', type: 'tinyint', width: 1, default: 0 })
+  isDefault!: boolean;
 
-  @UpdateDateColumn({ type: 'datetime' })
-  updatedAt: Date;
+  @CreateDateColumn({ name: 'created_at', type: 'datetime' })
+  createdAt!: Date;
+
+  @UpdateDateColumn({ name: 'updated_at', type: 'datetime' })
+  updatedAt!: Date;
 }

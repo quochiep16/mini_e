@@ -3,16 +3,16 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Param,
+  ParseIntPipe,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
-  UseInterceptors,
   UploadedFile,
-  ParseIntPipe,
-  ForbiddenException,
-  ParseUUIDPipe,
+  UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/multer-options.interface';
@@ -26,7 +26,6 @@ import { cloudinary } from '../../config/cloudinary.config';
 
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
-
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { AppRole } from 'src/common/constants/roles';
 
@@ -50,7 +49,10 @@ const shopUploadOptions: MulterOptions = {
   }),
   fileFilter: (req, file, cb) => {
     if (!/^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)) {
-      return cb(new BadRequestException('Chỉ chấp nhận ảnh (jpeg, png, webp, gif)'), false);
+      return cb(
+        new BadRequestException('Chỉ chấp nhận ảnh (jpeg, png, webp, gif)'),
+        false,
+      );
     }
     cb(null, true);
   },
@@ -61,6 +63,7 @@ const shopUploadOptions: MulterOptions = {
 export class ShopsController {
   constructor(private readonly shopsService: ShopsService) {}
 
+  @Roles(AppRole.USER, AppRole.ADMIN)
   @Post('register')
   async register(
     @CurrentUser('sub') userSub: number,
@@ -84,7 +87,8 @@ export class ShopsController {
     return { success: true, data };
   }
 
-  @Roles(AppRole.SELLER, AppRole.ADMIN)
+  // USER vẫn xem được shop của mình khi còn PENDING
+  @Roles(AppRole.USER, AppRole.SELLER, AppRole.ADMIN)
   @Get('me')
   async myShop(@CurrentUser('sub') userSub: number) {
     const userId = Number(userSub);
@@ -92,6 +96,7 @@ export class ShopsController {
     return { success: true, data: shop };
   }
 
+  // Chỉ SELLER/ADMIN mới xử lý đơn hàng
   @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Get('me/orders')
   async myShopOrders(
@@ -102,13 +107,17 @@ export class ShopsController {
     const userId = Number(userSub);
     const p = Math.max(1, parseInt(page || '1', 10));
     const l = Math.max(1, Math.min(100, parseInt(limit || '20', 10)));
+
     const data = await this.shopsService.listMyShopOrders(userId, p, l);
     return { success: true, data };
   }
 
   @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Get('me/orders/:id')
-  async myShopOrderDetail(@CurrentUser('sub') userSub: number, @Param('id', ParseUUIDPipe) id: string) {
+  async myShopOrderDetail(
+    @CurrentUser('sub') userSub: number,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
     const userId = Number(userSub);
     const data = await this.shopsService.getMyShopOrderDetail(userId, id);
     return { success: true, data };
@@ -122,12 +131,16 @@ export class ShopsController {
     @Body() dto: UpdateShopOrderShippingDto,
   ) {
     const userId = Number(userSub);
-    const data = await this.shopsService.updateMyShopOrderShippingStatus(userId, id, dto.shippingStatus);
+    const data = await this.shopsService.updateMyShopOrderShippingStatus(
+      userId,
+      id,
+      dto.shippingStatus,
+    );
     return { success: true, data };
   }
 
-
-  @Roles(AppRole.SELLER, AppRole.ADMIN)
+  // USER vẫn cập nhật được logo/cover khi shop còn PENDING
+  @Roles(AppRole.USER, AppRole.SELLER, AppRole.ADMIN)
   @Patch('me/logo')
   @UseInterceptors(FileInterceptor('file', shopUploadOptions))
   async uploadLogo(
@@ -145,7 +158,7 @@ export class ShopsController {
     return { success: true, data: shop };
   }
 
-  @Roles(AppRole.SELLER, AppRole.ADMIN)
+  @Roles(AppRole.USER, AppRole.SELLER, AppRole.ADMIN)
   @Patch('me/cover')
   @UseInterceptors(FileInterceptor('file', shopUploadOptions))
   async uploadCover(
@@ -170,7 +183,8 @@ export class ShopsController {
     return { success: true, data: shop };
   }
 
-  @Roles(AppRole.SELLER, AppRole.ADMIN)
+  // USER vẫn sửa được hồ sơ shop của mình khi còn PENDING
+  @Roles(AppRole.USER, AppRole.SELLER, AppRole.ADMIN)
   @Patch(':id')
   async update(
     @Param('id', ParseIntPipe) id: number,
@@ -192,7 +206,7 @@ export class ShopsController {
     return { success: true, data: shop };
   }
 
-  @Roles(AppRole.SELLER, AppRole.ADMIN)
+  @Roles(AppRole.USER, AppRole.SELLER, AppRole.ADMIN)
   @Delete(':id')
   async remove(
     @Param('id', ParseIntPipe) id: number,
