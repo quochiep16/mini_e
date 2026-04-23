@@ -1,10 +1,19 @@
-import { IsNotEmpty, IsNumber, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import {
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+  ValidateIf,
+} from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
 export class UpdateVariantDto {
   @IsOptional()
   @IsString({ message: 'name phải là chuỗi' })
   @MaxLength(120, { message: 'name tối đa 120 ký tự' })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   name?: string;
 
   @IsOptional()
@@ -21,12 +30,16 @@ export class UpdateVariantDto {
 
   @IsOptional()
   @Type(() => Number)
-  @IsNumber({}, { message: 'stock phải là số' })
+  @IsInt({ message: 'stock phải là số nguyên' })
   @Min(0, { message: 'stock phải ≥ 0' })
   stock?: number;
 
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber({}, { message: 'imageId phải là số' })
-  imageId?: number;
+  @Transform(({ value }) => {
+    if (value === null || value === '' || value === undefined) return null;
+    return Number(value);
+  })
+  @ValidateIf((_, value) => value !== null)
+  @IsInt({ message: 'imageId phải là số nguyên' })
+  @Min(1, { message: 'imageId phải ≥ 1' })
+  imageId?: number | null;
 }

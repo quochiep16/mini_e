@@ -8,7 +8,7 @@ export class CreateProductDto {
   @IsString({ message: 'title phải là chuỗi' })
   @MinLength(2, { message: 'title phải có ít nhất 2 ký tự' })
   @MaxLength(180, { message: 'title tối đa 180 ký tự' })
-  title: string;
+  title!: string;
 
   @IsOptional()
   @IsString({ message: 'slug phải là chuỗi' })
@@ -23,7 +23,7 @@ export class CreateProductDto {
   @IsNumber({ maxDecimalPlaces: 2 }, { message: 'price phải là số (tối đa 2 chữ số thập phân)' })
   @Min(0, { message: 'price phải ≥ 0' })
   @Max(999999999999 / 100, { message: 'price quá lớn' })
-  price: number;
+  price!: number;
 
   @IsOptional()
   @Type(() => Number)

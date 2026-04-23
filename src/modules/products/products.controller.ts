@@ -8,10 +8,9 @@ import {
   Patch,
   Post,
   Query,
-  Req,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
-  UploadedFiles,
   ParseIntPipe,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
@@ -20,59 +19,58 @@ import { diskStorage } from 'multer';
 import { extname, join } from 'path';
 import * as fs from 'fs';
 import { randomBytes } from 'crypto';
-import type { Request } from 'express';
-import { Express } from 'express';
-import { cloudinary } from '../../config/cloudinary.config';
 
+import { cloudinary } from '../../config/cloudinary.config';
 import { Public } from '../../common/decorators/public.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AccessTokenGuard } from '../../common/guards/access-token.guard';
 
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { GenerateVariantsDto } from './dto/generate-variants.dto';
-import { UpdateVariantDto } from './dto/update-variant.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
+import { UpdateProductDto } from './dto/update-product.dto';
+import { UpdateVariantDto } from './dto/update-variant.dto';
 
-import { AccessTokenGuard } from '../../common/guards/access-token.guard';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Gender, UserRole } from '../users/enums/user.enum'; 
-import { UpdateProductDto } from './dto/search-product.dto';
-import { Roles } from 'src/common/decorators/roles.decorator';
-import { AppRole } from 'src/common/constants/roles';
+import { UserRole } from '../users/enums/user.enum';
 
-// ==== cấu hình upload nhiều ảnh (vẫn lưu vào uploads/products) ====
 const uploadOptions: MulterOptions = {
   storage: diskStorage({
-    destination: (req, file, cb) => {
+    destination: (_req, _file, cb) => {
       const dir = join(process.cwd(), 'uploads', 'products');
       fs.mkdirSync(dir, { recursive: true });
       cb(null, dir);
     },
-    filename: (req, file, cb) => {
+    filename: (_req, file, cb) => {
       const unique = `${Date.now()}-${randomBytes(6).toString('hex')}`;
       cb(null, unique + extname(file.originalname).toLowerCase());
     },
   }),
-  fileFilter: (req, file, cb) => {
+  fileFilter: (_req, file, cb) => {
     if (!/^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)) {
-      return cb(new BadRequestException('Chỉ chấp nhận ảnh (jpeg, png, webp, gif)'), false);
+      return cb(new BadRequestException('Chỉ chấp nhận ảnh jpeg, png, webp, gif'), false);
     }
     cb(null, true);
   },
-  limits: { fileSize: 5 * 1024 * 1024, files: 10 },
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+    files: 10,
+  },
 };
 
+@UseGuards(AccessTokenGuard)
 @Controller('products')
 export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
-  // ===== public list/detail =====
   @Public()
   @Get()
-  async list(@Query() q: QueryProductsDto) {
-    const data = await this.productsService.findPublic(q);
+  async list(@Query() query: QueryProductsDto) {
+    const data = await this.productsService.findPublic(query);
     return { success: true, data };
   }
 
+  @Public()
   @Get('by-shop/:shopId')
   async listByShop(
     @Param('shopId', ParseIntPipe) shopId: number,
@@ -83,46 +81,52 @@ export class ProductsController {
     return { success: true, data };
   }
 
+  @Public()
   @Get(':id')
-  async detail(@Param('id') id: string) {
-    const data = await this.productsService.findOnePublic(Number(id));
+  async detail(@Param('id', ParseIntPipe) id: number) {
+    const data = await this.productsService.findOnePublic(id);
     return { success: true, data };
   }
-  
-  @Roles(AppRole.ADMIN)
+
   @Post()
   @UseInterceptors(FilesInterceptor('images', 10, uploadOptions))
   async create(
     @CurrentUser('sub') userId: number,
     @Body() dto: CreateProductDto,
-    @UploadedFiles() files: Express.Multer.File[],
-    @Req() req: Request, // không dùng nữa nhưng giữ cho đỡ phải sửa signature ở chỗ khác
+    @UploadedFiles() files: Express.Multer.File[] = [],
   ) {
-    // 1) Multer đã lưu file vào uploads/products
-    // 2) Ta lấy đường dẫn local đó để upload lên Cloudinary
-    const cloudinaryUrls: string[] = [];
+    const localPaths = files
+      .map((file) => file?.path)
+      .filter((path): path is string => Boolean(path));
 
-    if (files && files.length > 0) {
-      const uploadResults = await Promise.all(
-        files.map((file) =>
-          cloudinary.uploader.upload((file as any).path, {
-            folder: 'mini-e/products', // bạn có thể đổi tên folder trên Cloudinary nếu muốn
-          }),
-        ),
-      );
+    try {
+      const uploadedUrls: string[] = [];
 
-      uploadResults.forEach((res) => {
-        cloudinaryUrls.push(res.secure_url); // URL cuối cùng dùng để lưu DB
+      if (files.length > 0) {
+        const uploadResults = await Promise.all(
+          files.map((file) =>
+            cloudinary.uploader.upload(file.path, {
+              folder: 'mini-e/products',
+            }),
+          ),
+        );
+
+        for (const result of uploadResults) {
+          uploadedUrls.push(result.secure_url);
+        }
+      }
+
+      const product = await this.productsService.createBySeller(userId, {
+        ...dto,
+        images: uploadedUrls.length > 0 ? uploadedUrls : dto.images,
       });
+
+      return { success: true, data: product };
+    } finally {
+      if (localPaths.length > 0) {
+        await Promise.allSettled(localPaths.map((path) => fs.promises.unlink(path)));
+      }
     }
-
-    const product = await this.productsService.createBySeller(userId, {
-      ...dto,
-      // ưu tiên dùng URL từ Cloudinary; nếu không có file upload thì fallback sang dto.images (nếu FE gửi sẵn)
-      images: cloudinaryUrls.length ? cloudinaryUrls : dto.images,
-    });
-
-    return { success: true, data: product };
   }
 
   @Patch(':id')
@@ -138,46 +142,46 @@ export class ProductsController {
 
   @Delete(':id')
   async removeProduct(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @CurrentUser('sub') userId: number,
     @CurrentUser('role') role: UserRole,
   ) {
-    const res = await this.productsService.removeProduct(Number(id), userId, role);
-    return { res };
+    const data = await this.productsService.removeProduct(id, userId, role);
+    return { success: true, data };
   }
 
   @Post(':id/variants/generate')
   async generateVariants(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @CurrentUser('sub') userId: number,
     @CurrentUser('role') role: UserRole,
     @Body() dto: GenerateVariantsDto,
   ) {
-    const data = await this.productsService.generateVariants(Number(id), userId, role, dto);
+    const data = await this.productsService.generateVariants(id, userId, role, dto);
     return { success: true, data };
   }
 
   @Get(':id/variants')
   async listVariants(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @CurrentUser('sub') userId: number,
     @CurrentUser('role') role: UserRole,
   ) {
-    const data = await this.productsService.listVariants(Number(id), userId, role);
+    const data = await this.productsService.listVariants(id, userId, role);
     return { success: true, data };
   }
 
   @Patch(':productId/variants/:variantId')
   async updateVariant(
-    @Param('productId') productId: string,
-    @Param('variantId') variantId: string,
+    @Param('productId', ParseIntPipe) productId: number,
+    @Param('variantId', ParseIntPipe) variantId: number,
     @CurrentUser('sub') userId: number,
     @CurrentUser('role') role: UserRole,
     @Body() dto: UpdateVariantDto,
   ) {
     const data = await this.productsService.updateVariant(
-      Number(productId),
-      Number(variantId),
+      productId,
+      variantId,
       userId,
       role,
       dto,
