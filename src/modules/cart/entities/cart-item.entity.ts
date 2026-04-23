@@ -15,62 +15,63 @@ import { Cart } from './cart.entity';
 @Index('UQ_cartitem_unique_variant', ['cartId', 'variantId'], { unique: true })
 export class CartItem {
   @PrimaryGeneratedColumn()
-  id: number;
+  id !: number;
 
   @Column({ type: 'int', nullable: false })
-  cartId: number;
+  cartId !: number;
 
   @ManyToOne(() => Cart, (c) => c.items, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'cartId' })
-  cart: Cart;
+  cart !: Cart;
 
+  // Giữ raw id, KHÔNG map FK sang products lúc này
   @Column({ type: 'int', nullable: false })
-  productId: number;
+  productId !: number;
 
-  // ✅ biến thể bắt buộc
+  // Biến thể bắt buộc
   @Column({ type: 'int', nullable: false })
-  variantId: number;
+  variantId !: number;
 
   @Column({ type: 'varchar', length: 255 })
-  title: string;
+  title !: string;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
-  variantName: string | null;
+  variantName !: string | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  sku: string | null;
+  sku !: string | null;
 
+  // Giữ raw id, KHÔNG map FK sang product_images lúc này
   @Column({ type: 'int', nullable: true })
-  imageId: number | null;
+  imageId !: number | null;
 
-  // ✅ thêm cột mới lưu URL ảnh biến thể
   @Column({ type: 'varchar', length: 500, nullable: true })
-  imageUrl: string | null;
+  imageUrl !: string | null;
 
   @Column({ type: 'decimal', precision: 12, scale: 2 })
-  price: string;
+  price !: string;
 
   @Column({ type: 'int', default: 1 })
-  quantity: number;
+  quantity !: number;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  value1: string | null;
+  value1 !: string | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  value2: string | null;
+  value2 !: string | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  value3: string | null;
+  value3 !: string | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  value4: string | null;
+  value4 !: string | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  value5: string | null;
+  value5 !: string | null;
 
   @CreateDateColumn({ type: 'datetime' })
-  createdAt: Date;
+  createdAt !: Date;
 
   @UpdateDateColumn({ type: 'datetime' })
-  updatedAt: Date;
+  updatedAt !: Date;
 }

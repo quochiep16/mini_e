@@ -15,7 +15,10 @@ export class InitCarts1700000003000 implements MigrationInterface {
         createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY UQ_carts_user (userId),
-        CONSTRAINT FK_carts_user FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
+        CONSTRAINT FK_carts_user
+          FOREIGN KEY (userId) REFERENCES users(id)
+          ON DELETE CASCADE
+          ON UPDATE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
@@ -39,15 +42,18 @@ export class InitCarts1700000003000 implements MigrationInterface {
         value5 VARCHAR(100) NULL,
         createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        KEY IDX_cart (cartId),
-        KEY IDX_cart_product (productId),
-        KEY IDX_cart_variant (variantId),
-        KEY IDX_cart_image (imageId),
+
+        KEY IDX_cart_items_cart (cartId),
+        KEY IDX_cart_items_product (productId),
+        KEY IDX_cart_items_variant (variantId),
+        KEY IDX_cart_items_image (imageId),
+
         UNIQUE KEY UQ_cartitem_unique_variant (cartId, variantId),
-        CONSTRAINT FK_cart_items_cart FOREIGN KEY (cartId) REFERENCES carts(id) ON DELETE CASCADE ON UPDATE CASCADE,
-        CONSTRAINT FK_cart_items_product FOREIGN KEY (productId) REFERENCES products(id) ON DELETE CASCADE ON UPDATE CASCADE,
-        CONSTRAINT FK_cart_items_variant FOREIGN KEY (variantId) REFERENCES product_variants(id) ON DELETE CASCADE ON UPDATE CASCADE,
-        CONSTRAINT FK_cart_items_image FOREIGN KEY (imageId) REFERENCES product_images(id) ON DELETE SET NULL ON UPDATE CASCADE
+
+        CONSTRAINT FK_cart_items_cart
+          FOREIGN KEY (cartId) REFERENCES carts(id)
+          ON DELETE CASCADE
+          ON UPDATE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
   }

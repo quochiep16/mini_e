@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { Cart } from './entities/cart.entity';
 import { CartItem } from './entities/cart-item.entity';
 import { Product, ProductStatus } from '../products/entities/product.entity';
@@ -16,9 +16,13 @@ import { UpdateItemDto } from './dto/update-item.dto';
 @Injectable()
 export class CartService {
   constructor(
-    @InjectRepository(Cart) private readonly cartRepo: Repository<Cart>,
-    @InjectRepository(CartItem) private readonly itemRepo: Repository<CartItem>,
-    @InjectRepository(Product) private readonly productRepo: Repository<Product>,
+    private readonly dataSource: DataSource,
+    @InjectRepository(Cart)
+    private readonly cartRepo: Repository<Cart>,
+    @InjectRepository(CartItem)
+    private readonly itemRepo: Repository<CartItem>,
+    @InjectRepository(Product)
+    private readonly productRepo: Repository<Product>,
     @InjectRepository(ProductVariant)
     private readonly variantRepo: Repository<ProductVariant>,
     @InjectRepository(ProductImage)
@@ -26,35 +30,108 @@ export class CartService {
   ) {}
 
   // ========================================
+  // Repository helpers
+  // ========================================
+
+  private getCartRepo(manager?: EntityManager): Repository<Cart> {
+    return manager ? manager.getRepository(Cart) : this.cartRepo;
+  }
+
+  private getItemRepo(manager?: EntityManager): Repository<CartItem> {
+    return manager ? manager.getRepository(CartItem) : this.itemRepo;
+  }
+
+  private getProductRepo(manager?: EntityManager): Repository<Product> {
+    return manager ? manager.getRepository(Product) : this.productRepo;
+  }
+
+  private getVariantRepo(manager?: EntityManager): Repository<ProductVariant> {
+    return manager ? manager.getRepository(ProductVariant) : this.variantRepo;
+  }
+
+  private getImageRepo(manager?: EntityManager): Repository<ProductImage> {
+    return manager ? manager.getRepository(ProductImage) : this.imageRepo;
+  }
+
+  // ========================================
   // Helpers
   // ========================================
 
-  private async getOrCreateCart(userId: number): Promise<Cart> {
-    let cart = await this.cartRepo.findOne({ where: { userId } });
-    if (!cart) {
-      cart = this.cartRepo.create({
+  private isDuplicateEntryError(error: unknown): boolean {
+    const err = error as any;
+    return err?.code === 'ER_DUP_ENTRY' || err?.errno === 1062;
+  }
+
+  private normalizeMoney(value: unknown): string {
+    const num = Number(value ?? 0);
+    return Number.isFinite(num) ? num.toFixed(2) : '0.00';
+  }
+
+  private isProductPurchasable(product: Product): boolean {
+    const rawStatus = String((product as any)?.status ?? '').toUpperCase();
+
+    return (
+      rawStatus === String(ProductStatus.ACTIVE).toUpperCase() ||
+      rawStatus === 'PUBLISHED' ||
+      rawStatus === 'PUBLISH'
+    );
+  }
+
+  private async getOrCreateCart(
+    userId: number,
+    manager?: EntityManager,
+  ): Promise<Cart> {
+    const cartRepo = this.getCartRepo(manager);
+
+    let cart = await cartRepo.findOne({
+      where: { userId },
+    });
+
+    if (cart) return cart;
+
+    try {
+      cart = cartRepo.create({
         userId,
         itemsCount: 0,
         itemsQuantity: 0,
         subtotal: '0.00',
         currency: 'VND',
       });
-      cart = await this.cartRepo.save(cart);
+
+      return await cartRepo.save(cart);
+    } catch (error) {
+      if (!this.isDuplicateEntryError(error)) {
+        throw error;
+      }
+
+      const existed = await cartRepo.findOne({
+        where: { userId },
+      });
+
+      if (!existed) throw error;
+      return existed;
     }
-    return cart;
   }
 
-  private async recalcTotals(cartId: number) {
-    const items = await this.itemRepo.find({ where: { cartId } });
+  private async recalcTotals(
+    cartId: number,
+    manager?: EntityManager,
+  ): Promise<void> {
+    const itemRepo = this.getItemRepo(manager);
+    const cartRepo = this.getCartRepo(manager);
+
+    const items = await itemRepo.find({
+      where: { cartId },
+    });
 
     const itemsCount = items.length;
-    const itemsQuantity = items.reduce((s, i) => s + i.quantity, 0);
+    const itemsQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
     const subtotal = items.reduce(
-      (s, i) => s + Number(i.price) * i.quantity,
+      (sum, item) => sum + Number(item.price) * item.quantity,
       0,
     );
 
-    await this.cartRepo.update(cartId, {
+    await cartRepo.update(cartId, {
       itemsCount,
       itemsQuantity,
       subtotal: subtotal.toFixed(2),
@@ -64,25 +141,37 @@ export class CartService {
   private async resolveProductAndVariant(
     productId: number,
     variantId: number,
-  ) {
-    const product = await this.productRepo.findOne({ where: { id: productId } });
-    if (!product)
+    manager?: EntityManager,
+  ): Promise<{ product: Product; variant: ProductVariant }> {
+    const productRepo = this.getProductRepo(manager);
+    const variantRepo = this.getVariantRepo(manager);
+
+    const product = await productRepo.findOne({
+      where: { id: productId },
+    });
+
+    if (!product) {
       throw new NotFoundException('Không tìm thấy sản phẩm');
+    }
 
-    if (product.status !== ProductStatus.ACTIVE)
+    if (!this.isProductPurchasable(product)) {
       throw new BadRequestException('Sản phẩm chưa mở bán');
+    }
 
-    const variant = await this.variantRepo.findOne({
+    const variant = await variantRepo.findOne({
       where: { id: variantId, productId },
     });
-    if (!variant)
+
+    if (!variant) {
       throw new NotFoundException('Không tìm thấy biến thể của sản phẩm');
+    }
 
     return { product, variant };
   }
 
   private pickImageUrl(img: ProductImage | null): string | null {
     if (!img) return null;
+
     const anyImg = img as any;
     return anyImg.imageUrl || anyImg.url || anyImg.secureUrl || null;
   }
@@ -90,25 +179,60 @@ export class CartService {
   private async resolveImageSnapshot(
     productId: number,
     variant: ProductVariant,
-  ) {
-    // 1) ảnh theo variant.imageId
+    manager?: EntityManager,
+  ): Promise<{ imageId: number | null; imageUrl: string | null }> {
+    const imageRepo = this.getImageRepo(manager);
+
     if (variant.imageId) {
-      const found = await this.imageRepo.findOne({
+      const found = await imageRepo.findOne({
         where: { id: variant.imageId, productId },
       });
-      if (found)
-        return { imageId: found.id, imageUrl: this.pickImageUrl(found) };
+
+      if (found) {
+        return {
+          imageId: found.id,
+          imageUrl: this.pickImageUrl(found),
+        };
+      }
     }
 
-    // 2) fallback ảnh main
-    const main = await this.imageRepo.findOne({
+    const main = await imageRepo.findOne({
       where: { productId },
       order: { isMain: 'DESC', id: 'ASC' },
     });
+
     return {
       imageId: main?.id ?? null,
       imageUrl: this.pickImageUrl(main),
     };
+  }
+
+  private applySnapshotToItem(
+    item: CartItem,
+    product: Product,
+    variant: ProductVariant,
+    image: { imageId: number | null; imageUrl: string | null },
+    quantity?: number,
+  ): CartItem {
+    item.productId = product.id;
+    item.variantId = variant.id;
+    item.title = product.title;
+    item.variantName = variant.name ?? null;
+    item.sku = variant.sku ?? null;
+    item.imageId = image.imageId;
+    item.imageUrl = image.imageUrl;
+    item.price = this.normalizeMoney(variant.price ?? product.price);
+    item.value1 = variant.value1 ?? null;
+    item.value2 = variant.value2 ?? null;
+    item.value3 = variant.value3 ?? null;
+    item.value4 = variant.value4 ?? null;
+    item.value5 = variant.value5 ?? null;
+
+    if (typeof quantity === 'number') {
+      item.quantity = quantity;
+    }
+
+    return item;
   }
 
   // ========================================
@@ -117,127 +241,209 @@ export class CartService {
 
   async getCart(userId: number) {
     const cart = await this.getOrCreateCart(userId);
+
     const items = await this.itemRepo.find({
       where: { cartId: cart.id },
       order: { id: 'ASC' },
     });
-    return { ...cart, items };
+
+    return {
+      ...cart,
+      items,
+    };
   }
 
   async addItem(userId: number, dto: AddItemDto) {
-    if (!dto.variantId)
+    if (!dto.variantId) {
       throw new BadRequestException('variantId là bắt buộc');
-
-    const { product, variant } = await this.resolveProductAndVariant(
-      dto.productId,
-      dto.variantId,
-    );
-
-    const quantity = Math.max(1, dto.quantity ?? 1);
-    const available = variant.stock ?? 0;
-    if (quantity > available)
-      throw new BadRequestException(`Chỉ còn ${available} sản phẩm`);
-
-    const cart = await this.getOrCreateCart(userId);
-
-    // tìm dòng cũ
-    let item = await this.itemRepo.findOne({
-      where: { cartId: cart.id, variantId: variant.id },
-    });
-
-    const unitPrice = Number(variant.price ?? product.price);
-    const snapImage = await this.resolveImageSnapshot(product.id, variant);
-
-    if (!item) {
-      item = this.itemRepo.create({
-        cartId: cart.id,
-        productId: product.id,
-        variantId: variant.id,
-        title: product.title,
-        variantName: variant.name ?? null,
-        sku: variant.sku ?? null,
-        imageId: snapImage.imageId,
-        imageUrl: snapImage.imageUrl,
-        price: unitPrice.toFixed(2),
-        quantity,
-        value1: variant.value1 ?? null,
-        value2: variant.value2 ?? null,
-        value3: variant.value3 ?? null,
-        value4: variant.value4 ?? null,
-        value5: variant.value5 ?? null,
-      });
-    } else {
-      const next = item.quantity + quantity;
-      if (next > available)
-        throw new BadRequestException(`Chỉ còn ${available} sản phẩm`);
-      item.quantity = next;
-      if (!item.imageUrl && snapImage.imageUrl) {
-        item.imageId = snapImage.imageId;
-        item.imageUrl = snapImage.imageUrl;
-      }
     }
 
-    await this.itemRepo.save(item);
-    await this.recalcTotals(cart.id);
+    await this.dataSource.transaction(async (manager) => {
+      const cart = await this.getOrCreateCart(userId, manager);
+
+      const { product, variant } = await this.resolveProductAndVariant(
+        dto.productId,
+        dto.variantId,
+        manager,
+      );
+
+      const quantity = Math.max(1, dto.quantity ?? 1);
+      const available = Number(variant.stock ?? 0);
+
+      if (quantity > available) {
+        throw new BadRequestException(`Chỉ còn ${available} sản phẩm`);
+      }
+
+      const itemRepo = this.getItemRepo(manager);
+      const snapImage = await this.resolveImageSnapshot(
+        product.id,
+        variant,
+        manager,
+      );
+
+      let item = await itemRepo.findOne({
+        where: { cartId: cart.id, variantId: variant.id },
+      });
+
+      if (!item) {
+        item = itemRepo.create({
+          cartId: cart.id,
+        });
+
+        this.applySnapshotToItem(item, product, variant, snapImage, quantity);
+
+        try {
+          await itemRepo.save(item);
+        } catch (error) {
+          if (!this.isDuplicateEntryError(error)) {
+            throw error;
+          }
+
+          const existed = await itemRepo.findOne({
+            where: { cartId: cart.id, variantId: variant.id },
+          });
+
+          if (!existed) {
+            throw error;
+          }
+
+          const nextQuantity = existed.quantity + quantity;
+
+          if (nextQuantity > available) {
+            throw new BadRequestException(`Chỉ còn ${available} sản phẩm`);
+          }
+
+          this.applySnapshotToItem(
+            existed,
+            product,
+            variant,
+            snapImage,
+            nextQuantity,
+          );
+
+          await itemRepo.save(existed);
+        }
+      } else {
+        const nextQuantity = item.quantity + quantity;
+
+        if (nextQuantity > available) {
+          throw new BadRequestException(`Chỉ còn ${available} sản phẩm`);
+        }
+
+        this.applySnapshotToItem(
+          item,
+          product,
+          variant,
+          snapImage,
+          nextQuantity,
+        );
+
+        await itemRepo.save(item);
+      }
+
+      await this.recalcTotals(cart.id, manager);
+    });
+
     return this.getCart(userId);
   }
 
   async updateItem(userId: number, itemId: number, dto: UpdateItemDto) {
-    const cart = await this.getOrCreateCart(userId);
-    const item = await this.itemRepo.findOne({
-      where: { id: itemId, cartId: cart.id },
+    await this.dataSource.transaction(async (manager) => {
+      const cart = await this.getOrCreateCart(userId, manager);
+      const itemRepo = this.getItemRepo(manager);
+
+      const item = await itemRepo.findOne({
+        where: { id: itemId, cartId: cart.id },
+      });
+
+      if (!item) {
+        throw new NotFoundException('Không tìm thấy dòng giỏ hàng');
+      }
+
+      if (dto.quantity === 0) {
+        await itemRepo.delete({ id: item.id });
+        await this.recalcTotals(cart.id, manager);
+        return;
+      }
+
+      const { product, variant } = await this.resolveProductAndVariant(
+        item.productId,
+        item.variantId,
+        manager,
+      );
+
+      const available = Number(variant.stock ?? 0);
+
+      if (dto.quantity > available) {
+        throw new BadRequestException(`Chỉ còn ${available} sản phẩm`);
+      }
+
+      const snapImage = await this.resolveImageSnapshot(
+        product.id,
+        variant,
+        manager,
+      );
+
+      this.applySnapshotToItem(item, product, variant, snapImage, dto.quantity);
+
+      await itemRepo.save(item);
+      await this.recalcTotals(cart.id, manager);
     });
-    if (!item)
-      throw new NotFoundException('Không tìm thấy dòng giỏ hàng');
 
-    if (dto.quantity === 0) {
-      await this.itemRepo.delete({ id: item.id });
-      await this.recalcTotals(cart.id);
-      return this.getCart(userId);
-    }
-
-    const { variant } = await this.resolveProductAndVariant(
-      item.productId,
-      item.variantId,
-    );
-    const available = variant.stock ?? 0;
-    if (dto.quantity > available)
-      throw new BadRequestException(`Chỉ còn ${available} sản phẩm`);
-
-    item.quantity = dto.quantity;
-    await this.itemRepo.save(item);
-    await this.recalcTotals(cart.id);
     return this.getCart(userId);
   }
 
   async removeItem(userId: number, itemId: number) {
-    const cart = await this.getOrCreateCart(userId);
-    await this.itemRepo.delete({ id: itemId, cartId: cart.id });
-    await this.recalcTotals(cart.id);
+    await this.dataSource.transaction(async (manager) => {
+      const cart = await this.getOrCreateCart(userId, manager);
+      const itemRepo = this.getItemRepo(manager);
+
+      const item = await itemRepo.findOne({
+        where: { id: itemId, cartId: cart.id },
+      });
+
+      if (!item) {
+        throw new NotFoundException('Không tìm thấy dòng giỏ hàng');
+      }
+
+      await itemRepo.delete({ id: item.id });
+      await this.recalcTotals(cart.id, manager);
+    });
+
     return this.getCart(userId);
   }
 
   async clear(userId: number) {
-    const cart = await this.getOrCreateCart(userId);
-    await this.itemRepo.delete({ cartId: cart.id });
-    await this.recalcTotals(cart.id);
+    await this.dataSource.transaction(async (manager) => {
+      const cart = await this.getOrCreateCart(userId, manager);
+      const itemRepo = this.getItemRepo(manager);
+
+      await itemRepo.delete({ cartId: cart.id });
+      await this.recalcTotals(cart.id, manager);
+    });
+
     return this.getCart(userId);
   }
 
   async removeMany(userId: number, itemIds: number[]): Promise<void> {
-    if (!itemIds || itemIds.length === 0) return;
+    if (!itemIds?.length) return;
 
-    // tìm cart của user (nếu chưa có thì thôi)
-    const cart = await this.cartRepo.findOne({ where: { userId } });
-    if (!cart) return;
+    await this.dataSource.transaction(async (manager) => {
+      const cartRepo = this.getCartRepo(manager);
+      const itemRepo = this.getItemRepo(manager);
 
-    // chỉ xoá những item thuộc cart của user
-    await this.itemRepo.delete({
-      cartId: cart.id,
-      id: In(itemIds),
+      const cart = await cartRepo.findOne({
+        where: { userId },
+      });
+
+      if (!cart) return;
+
+      await itemRepo.delete({
+        cartId: cart.id,
+        id: In(itemIds),
+      });
+
+      await this.recalcTotals(cart.id, manager);
     });
-
-    // cập nhật lại totals
-    await this.recalcTotals(cart.id);
   }
 }
