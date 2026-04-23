@@ -1,9 +1,10 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { Order, OrderStatus, PaymentMethod, PaymentStatus, ShippingStatus } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { PreviewOrderDto, CreateOrderDto } from './dto/create-order.dto';
+import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { CartService } from '../cart/cart.service';
 import { Address } from '../addresses/entities/address.entity';
 import { Product } from '../products/entities/product.entity';
@@ -15,33 +16,50 @@ import { haversineKm, calcShippingFee } from '../../common/utils/shipping.util';
 import { PaymentGatewayService } from './payment.gateway';
 import { PaymentSession, PaymentSessionStatus } from './entities/payment-session.entity';
 
+type AddressLike = {
+  fullName?: string;
+  phone?: string;
+  formattedAddress?: string;
+  placeId?: string | null;
+  lat?: string | number;
+  lng?: string | number;
+};
+
+type CheckoutAddressSnapshot = {
+  fullName: string;
+  phone: string;
+  formattedAddress: string;
+  placeId?: string | null;
+  lat: string;
+  lng: string;
+};
+
+type CheckoutItemSnapshot = {
+  cartItemId: number;
+  productId: number;
+  variantId: number | null;
+  title: string;
+  variantName?: string | null;
+  imageId?: number | null;
+  imageUrl?: string | null;
+  price: number;
+  quantity: number;
+  value1?: string | null;
+  value2?: string | null;
+  value3?: string | null;
+  value4?: string | null;
+  value5?: string | null;
+};
+
 type CheckoutSnapshot = {
-  address: {
-    fullName: string;
-    phone: string;
-    formattedAddress: string;
-    placeId?: string | null;
-    lat: string;
-    lng: string;
-  };
+  address: CheckoutAddressSnapshot;
   cartItemIds: number[];
   note?: string | null;
-  items: Array<{
-    cartItemId: number;
-    productId: number;
-    variantId: number | null;
-    title: string;
-    variantName?: string | null;
-    imageId?: number | null;
-    imageUrl?: string | null;
-    price: number;
-    quantity: number;
-    value1?: string | null;
-    value2?: string | null;
-    value3?: string | null;
-    value4?: string | null;
-    value5?: string | null;
-  }>;
+  items: CheckoutItemSnapshot[];
+};
+
+type PreparedItem = CheckoutItemSnapshot & {
+  _prod: Product;
 };
 
 @Injectable()
@@ -63,7 +81,6 @@ export class OrdersService {
   ) {}
 
   private async applyShopStatsOnCompleted(orderId: string) {
-    // Chỉ tính thống kê khi đơn đã "kết thúc" (user xác nhận nhận hàng)
     const rows = await this.dataSource
       .createQueryBuilder()
       .select('p.shop_id', 'shopId')
@@ -83,26 +100,20 @@ export class OrdersService {
       const qty = Number(r.qty || 0);
       const lines = Number(r.lines || 0);
 
-      // đảm bảo có stats
       let stats = await this.shopStatsRepo.findOne({ where: { shopId } as any });
       if (!stats) {
-        const newStats = {
+        stats = await this.shopStatsRepo.save({
           shopId,
           productCount: 0,
           totalSold: 0,
           totalRevenue: 0,
           totalOrders: 0,
-        } as Partial<ShopStats>;
-        stats = await this.shopStatsRepo.save(newStats);
+        } as Partial<ShopStats>);
       }
 
-      if (!stats) {
-        throw new Error('Không thể tạo hoặc tìm thấy ShopStats');
-      }
-
-      stats.totalOrders = Number(stats.totalOrders ?? 0) + 1;
-      stats.totalSold = Number(stats.totalSold ?? 0) + Math.max(0, qty);
-      if (lines > 0) stats.totalRevenue = Number(stats.totalRevenue ?? 0) + lines;
+      stats.totalOrders = Number((stats as any).totalOrders ?? 0) + 1;
+      stats.totalSold = Number((stats as any).totalSold ?? 0) + Math.max(0, qty);
+      stats.totalRevenue = Number((stats as any).totalRevenue ?? 0) + Math.max(0, lines);
 
       await this.shopStatsRepo.save(stats);
     }
@@ -125,54 +136,313 @@ export class OrdersService {
   }
 
   private genOrderCode() {
-    const n = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+    const n = Math.floor(Math.random() * 10000)
+      .toString()
+      .padStart(4, '0');
     const d = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     return `OD${d}-${n}`;
   }
+
   private genSessionCode() {
-    const n = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+    const n = Math.floor(Math.random() * 10000)
+      .toString()
+      .padStart(4, '0');
     const d = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     return `PM${d}-${n}`;
   }
 
   private normalizeIp(ip?: string) {
     if (!ip) return '127.0.0.1';
-    // express hay trả "::ffff:127.0.0.1"
     return ip.startsWith('::ffff:') ? ip.replace('::ffff:', '') : ip;
   }
 
   private pickItems(cart: any, itemIds?: number[]) {
-    if (!itemIds?.length) return cart.items;
+    if (!itemIds?.length) return cart.items || [];
     const set = new Set(itemIds.map(Number));
     const selected = (cart.items || []).filter((i: any) => set.has(Number(i.id)));
-    if (selected.length !== set.size) throw new BadRequestException('Một số cart item không tồn tại');
+    if (selected.length !== set.size) {
+      throw new BadRequestException('Một số cart item không tồn tại');
+    }
     return selected;
   }
 
   private async getAddress(userId: number, addressId?: number) {
     const addr = addressId
-      ? await this.addrRepo.findOne({ where: { id: addressId, userId } })
-      : await this.addrRepo.findOne({ where: { userId, isDefault: true as any } });
+      ? await this.addrRepo.findOne({ where: { id: addressId, userId } as any })
+      : await this.addrRepo.findOne({ where: { userId, isDefault: true } as any });
 
     if (!addr) throw new BadRequestException('Chưa chọn địa chỉ và không có địa chỉ mặc định');
-    if (!addr.lat || !addr.lng) throw new BadRequestException('Địa chỉ chưa có toạ độ');
+    if (addr.lat == null || addr.lng == null) {
+      throw new BadRequestException('Địa chỉ chưa có toạ độ');
+    }
+
     return addr;
   }
 
-  /** Nhóm theo productId (mỗi product => 1 order) */
-  private async groupByProduct(selected: any[]) {
-    const productIds = Array.from(new Set(selected.map((i: any) => i.productId)));
-    const prods = await this.productRepo.find({ where: { id: In(productIds) } as any });
-    const prodMap = new Map(prods.map((p) => [p.id, p]));
-    const groups = new Map<number, any[]>();
-
-    for (const it of selected) {
-      const p = prodMap.get(it.productId);
-      if (!p) throw new BadRequestException('Sản phẩm không tồn tại');
-      if (!groups.has(p.id)) groups.set(p.id, []);
-      (groups.get(p.id) as any[]).push({ ...it, _prod: p });
+  private async generateUniqueOrderCode(orderRepo: Repository<Order>) {
+    let code = this.genOrderCode();
+    for (let i = 0; i < 10; i++) {
+      const existed = await orderRepo.findOne({ where: { code } });
+      if (!existed) return code;
+      code = this.genOrderCode();
     }
+    throw new BadRequestException('Không thể tạo mã đơn hàng, vui lòng thử lại');
+  }
+
+  private async generateUniqueSessionCode(sessionRepo: Repository<PaymentSession>) {
+    let code = this.genSessionCode();
+    for (let i = 0; i < 10; i++) {
+      const existed = await sessionRepo.findOne({ where: { code } });
+      if (!existed) return code;
+      code = this.genSessionCode();
+    }
+    throw new BadRequestException('Không thể tạo mã thanh toán, vui lòng thử lại');
+  }
+
+  private async groupByShop(
+    items: any[],
+    productRepo: Repository<Product> = this.productRepo,
+  ): Promise<{
+    groups: Map<number, PreparedItem[]>;
+    prodMap: Map<number, Product>;
+  }> {
+    const productIds = Array.from(new Set(items.map((i: any) => Number(i.productId))));
+    const prods = await productRepo.find({ where: { id: In(productIds) } as any });
+    const prodMap = new Map(prods.map((p) => [p.id, p]));
+    const groups = new Map<number, PreparedItem[]>();
+
+    for (const raw of items) {
+      const productId = Number(raw.productId);
+      const p = prodMap.get(productId);
+      if (!p) throw new BadRequestException('Sản phẩm không tồn tại');
+
+      const shopId = Number((p as any).shopId);
+      if (!shopId) throw new BadRequestException('Sản phẩm chưa gắn shop');
+
+      const prepared: PreparedItem = {
+        cartItemId: Number(raw.cartItemId ?? raw.id),
+        productId,
+        variantId: raw.variantId != null ? Number(raw.variantId) : null,
+        title: String(raw.title),
+        variantName: raw.variantName ?? null,
+        imageId: raw.imageId != null ? Number(raw.imageId) : null,
+        imageUrl: raw.imageUrl ?? null,
+        price: Number(raw.price),
+        quantity: Number(raw.quantity),
+        value1: raw.value1 ?? null,
+        value2: raw.value2 ?? null,
+        value3: raw.value3 ?? null,
+        value4: raw.value4 ?? null,
+        value5: raw.value5 ?? null,
+        _prod: p,
+      };
+
+      if (!groups.has(shopId)) groups.set(shopId, []);
+      groups.get(shopId)!.push(prepared);
+    }
+
     return { groups, prodMap };
+  }
+
+  private async getImageMap(
+    items: Array<{ imageId?: number | null }>,
+    imageRepo: Repository<ProductImage> = this.imageRepo,
+  ) {
+    const imageIds = Array.from(new Set(items.map((i) => i.imageId).filter(Boolean))) as number[];
+    const images = imageIds.length ? await imageRepo.find({ where: { id: In(imageIds) } as any }) : [];
+    return new Map(images.map((im: any) => [im.id, im.url]));
+  }
+
+  private async getShopMap(shopIds: number[], shopRepo: Repository<Shop> = this.shopRepo) {
+    const shops = shopIds.length ? await shopRepo.find({ where: { id: In(shopIds) } as any }) : [];
+    return new Map(shops.map((s) => [Number((s as any).id), s]));
+  }
+
+  private calcGroupTotals(items: PreparedItem[], shop: Shop, address: AddressLike) {
+    const shopLat = Number((shop as any).shopLat);
+    const shopLng = Number((shop as any).shopLng);
+    const addrLat = Number(address.lat);
+    const addrLng = Number(address.lng);
+
+    if (Number.isNaN(shopLat) || Number.isNaN(shopLng)) {
+      throw new BadRequestException('Shop chưa cấu hình tọa độ');
+    }
+
+    if (address.lat == null || address.lng == null || Number.isNaN(addrLat) || Number.isNaN(addrLng)) {
+      throw new BadRequestException('Địa chỉ chưa có toạ độ');
+    }
+
+    const subtotal = items.reduce((s, i) => s + Number(i.price) * i.quantity, 0);
+    const distanceKm = haversineKm(shopLat, shopLng, addrLat, addrLng);
+    const shippingFee = calcShippingFee(distanceKm, subtotal);
+    const total = subtotal + shippingFee;
+
+    return {
+      distanceKm: +distanceKm.toFixed(2),
+      subtotal: +subtotal.toFixed(2),
+      shippingFee,
+      total: +total.toFixed(2),
+    };
+  }
+
+  private async getVariantMap(
+    items: PreparedItem[],
+    variantRepo: Repository<ProductVariant> = this.variantRepo,
+  ) {
+    const variantIds = Array.from(
+      new Set(items.map((i) => i.variantId).filter((v): v is number => v != null)),
+    );
+    const variants = variantIds.length ? await variantRepo.find({ where: { id: In(variantIds) } as any }) : [];
+    return new Map(variants.map((v: any) => [v.id, v]));
+  }
+
+  private async ensureStockAvailableForGroup(
+    items: PreparedItem[],
+    variantRepo: Repository<ProductVariant> = this.variantRepo,
+  ) {
+    const variantMap = await this.getVariantMap(items, variantRepo);
+
+    for (const it of items) {
+      if (it.variantId) {
+        const v: any = variantMap.get(it.variantId);
+        if (!v) throw new BadRequestException('Biến thể không tồn tại');
+        if (v.productId && Number(v.productId) !== Number(it.productId)) {
+          throw new BadRequestException('Biến thể không thuộc sản phẩm đã chọn');
+        }
+        if (v.stock != null && Number(v.stock) < it.quantity) {
+          throw new BadRequestException(`SKU ${v.sku} không đủ tồn`);
+        }
+      } else {
+        const p: any = it._prod;
+        if (p.stock != null && Number(p.stock) < it.quantity) {
+          throw new BadRequestException(`Sản phẩm ${p.title} không đủ tồn`);
+        }
+      }
+    }
+  }
+
+  private async reserveStockForGroup(items: PreparedItem[], trx: EntityManager) {
+    const variantRepo = trx.getRepository(ProductVariant);
+    const productRepo = trx.getRepository(Product);
+    const variantMap = await this.getVariantMap(items, variantRepo);
+
+    for (const it of items) {
+      if (it.variantId) {
+        const v: any = variantMap.get(it.variantId);
+        if (!v) throw new BadRequestException('Biến thể không tồn tại');
+
+        if (v.stock == null) continue;
+
+        const rs = await variantRepo
+          .createQueryBuilder()
+          .update(ProductVariant)
+          .set({ stock: () => `stock - ${it.quantity}` } as any)
+          .where('id = :id', { id: it.variantId })
+          .andWhere('stock >= :qty', { qty: it.quantity })
+          .execute();
+
+        if (!rs.affected) {
+          throw new BadRequestException(`SKU ${v.sku} không đủ tồn`);
+        }
+      } else {
+        const p: any = it._prod;
+
+        if (p.stock == null) continue;
+
+        const rs = await productRepo
+          .createQueryBuilder()
+          .update(Product)
+          .set({ stock: () => `stock - ${it.quantity}` } as any)
+          .where('id = :id', { id: it.productId })
+          .andWhere('stock >= :qty', { qty: it.quantity })
+          .execute();
+
+        if (!rs.affected) {
+          throw new BadRequestException(`Sản phẩm ${p.title} không đủ tồn`);
+        }
+      }
+    }
+  }
+
+  private async createOrderForGroup(params: {
+    trx: EntityManager;
+    userId: number;
+    shop: Shop;
+    items: PreparedItem[];
+    address: CheckoutAddressSnapshot | AddressLike;
+    imageMap: Map<number, string>;
+    paymentMethod: PaymentMethod;
+    paymentStatus: PaymentStatus;
+    status: OrderStatus;
+    shippingStatus: ShippingStatus;
+    paymentRef?: string | null;
+    paymentMeta?: any;
+    note?: string | null;
+  }) {
+    const { trx, userId, shop, items, address, imageMap } = params;
+    const orderRepo = trx.getRepository(Order);
+    const itemRepo = trx.getRepository(OrderItem);
+
+    await this.reserveStockForGroup(items, trx);
+
+    const totals = this.calcGroupTotals(items, shop, address);
+    const code = await this.generateUniqueOrderCode(orderRepo);
+
+    const order = orderRepo.create({
+      userId,
+      code,
+      paymentMethod: params.paymentMethod,
+      status: params.status,
+      paymentStatus: params.paymentStatus,
+      shippingStatus: params.shippingStatus,
+      paymentRef: params.paymentRef ?? null,
+      paymentMeta: params.paymentMeta ?? null,
+      addressSnapshot: {
+        fullName: address.fullName,
+        phone: address.phone,
+        formattedAddress: address.formattedAddress,
+        placeId: address.placeId ?? null,
+        lat: address.lat,
+        lng: address.lng,
+      },
+      subtotal: totals.subtotal.toFixed(2),
+      discount: '0.00',
+      shippingFee: Number(totals.shippingFee).toFixed(2),
+      total: totals.total.toFixed(2),
+      note: params.note ?? null,
+    });
+
+    const savedOrder = await orderRepo.save(order);
+
+    for (const it of items) {
+      const nameSnapshot = it.variantName ? `${it.title} - ${it.variantName}` : it.title;
+      const imageSnapshot = it.imageUrl ?? (it.imageId ? imageMap.get(it.imageId) ?? null : null);
+      const totalLine = Number(it.price) * it.quantity;
+
+      await itemRepo.save(
+        itemRepo.create({
+          orderId: savedOrder.id,
+          productId: it.productId,
+          productVariantId: it.variantId ?? null,
+          nameSnapshot,
+          imageSnapshot,
+          price: Number(it.price).toFixed(2),
+          quantity: it.quantity,
+          totalLine: totalLine.toFixed(2),
+          value1: it.value1 ?? null,
+          value2: it.value2 ?? null,
+          value3: it.value3 ?? null,
+          value4: it.value4 ?? null,
+          value5: it.value5 ?? null,
+        }),
+      );
+    }
+
+    return {
+      orderId: savedOrder.id,
+      code: savedOrder.code,
+      total: totals.total,
+    };
   }
 
   async preview(userId: number, dto: PreviewOrderDto) {
@@ -183,49 +453,44 @@ export class OrdersService {
     if (!selected.length) throw new BadRequestException('Chưa chọn sản phẩm nào');
 
     const addr = await this.getAddress(userId, dto.addressId);
-    const { groups, prodMap } = await this.groupByProduct(selected);
+    const { groups } = await this.groupByShop(selected);
+    const imageMap = await this.getImageMap(selected);
+    const shopMap = await this.getShopMap(Array.from(groups.keys()));
 
-    const imageIds = Array.from(new Set(selected.map((i: any) => i.imageId).filter(Boolean)));
-    const images = imageIds.length ? await this.imageRepo.find({ where: { id: In(imageIds) } as any }) : [];
-    const imgMap = new Map(images.map((im) => [im.id, im.url]));
+    const orders: any[] = [];
+    let sumSubtotal = 0;
+    let sumShipping = 0;
 
-    const resultOrders: any[] = [];
-    let sumSubtotal = 0,
-      sumShipping = 0;
-
-    for (const [productId, items] of groups.entries()) {
-      const p = prodMap.get(productId)!;
-      const shop = await this.shopRepo.findOne({ where: { id: p.shopId } as any });
+    for (const [shopId, items] of groups.entries()) {
+      const shop = shopMap.get(shopId);
       if (!shop) throw new BadRequestException('Shop không tồn tại');
 
-      const shopLat = +(shop as any).shopLat;
-      const shopLng = +(shop as any).shopLng;
-      if (isNaN(shopLat) || isNaN(shopLng)) throw new BadRequestException('Shop chưa cấu hình tọa độ');
+      const totals = this.calcGroupTotals(items, shop, addr);
 
-      const subtotal = items.reduce((s: number, i: any) => s + Number(i.price) * i.quantity, 0);
-      const distanceKm = haversineKm(shopLat, shopLng, +addr.lat!, +addr.lng!);
-      const shippingFee = calcShippingFee(distanceKm, subtotal);
-      const total = subtotal + shippingFee;
-
-      resultOrders.push({
-        product: { id: p.id, title: (p as any).title },
-        items: items.map((i: any) => ({
-          id: i.id,
+      orders.push({
+        shop: {
+          id: shopId,
+          name: (shop as any).name,
+          slug: (shop as any).slug,
+        },
+        items: items.map((i) => ({
+          id: i.cartItemId,
           variantId: i.variantId ?? null,
+          productId: i.productId,
           name: i.variantName ? `${i.title} - ${i.variantName}` : i.title,
-          imageUrl: i.imageUrl ?? (i.imageId ? imgMap.get(i.imageId) ?? null : null),
+          imageUrl: i.imageUrl ?? (i.imageId ? imageMap.get(i.imageId) ?? null : null),
           price: +Number(i.price).toFixed(2),
           quantity: i.quantity,
           totalLine: +Number(Number(i.price) * i.quantity).toFixed(2),
         })),
-        distanceKm: +distanceKm.toFixed(2),
-        subtotal: +subtotal.toFixed(2),
-        shippingFee,
-        total: +total.toFixed(2),
+        distanceKm: totals.distanceKm,
+        subtotal: totals.subtotal,
+        shippingFee: totals.shippingFee,
+        total: totals.total,
       });
 
-      sumSubtotal += subtotal;
-      sumShipping += shippingFee;
+      sumSubtotal += totals.subtotal;
+      sumShipping += Number(totals.shippingFee);
     }
 
     return {
@@ -235,19 +500,15 @@ export class OrdersService {
         phone: addr.phone,
         formattedAddress: addr.formattedAddress,
       },
-      orders: resultOrders,
+      orders,
       summary: {
         subtotal: +sumSubtotal.toFixed(2),
-        shippingFee: sumShipping,
+        shippingFee: +sumShipping.toFixed(2),
         total: +(sumSubtotal + sumShipping).toFixed(2),
       },
     };
   }
 
-  /**
-   * ✅ COD: tạo order ngay + xoá cart
-   * ✅ VNPAY: chỉ tạo PaymentSession + trả paymentUrl (QR chuẩn nằm trên VNPAY gateway)
-   */
   async create(userId: number, dto: CreateOrderDto, ipAddress = '127.0.0.1') {
     const cart = await this.cartService.getCart(userId);
     if (!cart.items?.length) throw new BadRequestException('Giỏ hàng trống');
@@ -256,44 +517,22 @@ export class OrdersService {
     if (!selected.length) throw new BadRequestException('Chưa chọn sản phẩm nào');
 
     const addr = await this.getAddress(userId, dto.addressId);
-    const { groups, prodMap } = await this.groupByProduct(selected);
+    const { groups } = await this.groupByShop(selected);
 
-    // ====== VNPAY: CHỈ TẠO SESSION ======
     if (dto.paymentMethod === PaymentMethod.VNPAY) {
-      // tính tổng tiền
+      const shopMap = await this.getShopMap(Array.from(groups.keys()));
       let totalAmount = 0;
 
-      for (const [productId, items] of groups.entries()) {
-        const p = prodMap.get(productId)!;
-        const shop = await this.shopRepo.findOne({ where: { id: p.shopId } as any });
+      for (const [shopId, items] of groups.entries()) {
+        const shop = shopMap.get(shopId);
         if (!shop) throw new BadRequestException('Shop không tồn tại');
 
-        const shopLat = +(shop as any).shopLat;
-        const shopLng = +(shop as any).shopLng;
-        if (isNaN(shopLat) || isNaN(shopLng)) throw new BadRequestException('Shop chưa cấu hình tọa độ');
+        await this.ensureStockAvailableForGroup(items);
 
-        // check tồn kho (chỉ check, chưa trừ)
-        const vIds = Array.from(new Set(items.map((i: any) => i.variantId).filter(Boolean)));
-        const vars = vIds.length ? await this.variantRepo.find({ where: { id: In(vIds) } as any }) : [];
-        const varMap = new Map(vars.map((v) => [v.id, v]));
-
-        for (const it of items) {
-          if (it.variantId) {
-            const v = varMap.get(it.variantId);
-            if (!v) throw new BadRequestException('Biến thể không tồn tại');
-            if (v.stock != null && v.stock < it.quantity) throw new BadRequestException(`SKU ${v.sku} không đủ tồn`);
-          } else if (p.stock != null && p.stock < it.quantity) {
-            throw new BadRequestException(`Sản phẩm ${p.title} không đủ tồn`);
-          }
-        }
-
-        const subtotal = items.reduce((s: number, i: any) => s + Number(i.price) * i.quantity, 0);
-        const distanceKm = haversineKm(shopLat, shopLng, +addr.lat!, +addr.lng!);
-        const shippingFee = calcShippingFee(distanceKm, subtotal);
-        totalAmount += subtotal + shippingFee;
+        const totals = this.calcGroupTotals(items, shop, addr);
+        totalAmount += totals.total;
       }
 
-      // snapshot để sau khi thanh toán mới tạo order
       const snapshot: CheckoutSnapshot = {
         address: {
           fullName: addr.fullName,
@@ -308,10 +547,10 @@ export class OrdersService {
         items: selected.map((i: any) => ({
           cartItemId: Number(i.id),
           productId: Number(i.productId),
-          variantId: i.variantId ? Number(i.variantId) : null,
+          variantId: i.variantId != null ? Number(i.variantId) : null,
           title: String(i.title),
           variantName: i.variantName ?? null,
-          imageId: i.imageId ? Number(i.imageId) : null,
+          imageId: i.imageId != null ? Number(i.imageId) : null,
           imageUrl: i.imageUrl ?? null,
           price: Number(i.price),
           quantity: Number(i.quantity),
@@ -323,13 +562,7 @@ export class OrdersService {
         })),
       };
 
-      // tạo session
-      let sessionCode = this.genSessionCode();
-      for (let i = 0; i < 5; i++) {
-        const existed = await this.sessionRepo.findOne({ where: { code: sessionCode } });
-        if (!existed) break;
-        sessionCode = this.genSessionCode();
-      }
+      const sessionCode = await this.generateUniqueSessionCode(this.sessionRepo);
 
       const session = this.sessionRepo.create({
         userId,
@@ -349,131 +582,62 @@ export class OrdersService {
       });
 
       return {
-        session: { code: saved.code, amount: +Number(totalAmount).toFixed(2), status: saved.status },
+        session: {
+          code: saved.code,
+          amount: +Number(totalAmount).toFixed(2),
+          status: saved.status,
+        },
         paymentUrl,
       };
     }
 
-    // ====== COD: TẠO ORDER NGAY ======
-    const imageIds = Array.from(new Set(selected.map((i: any) => i.imageId).filter(Boolean)));
-    const images = imageIds.length ? await this.imageRepo.find({ where: { id: In(imageIds) } as any }) : [];
-    const imgMap = new Map(images.map((im) => [im.id, im.url]));
-
+    const imageMap = await this.getImageMap(selected);
     const createdOrders: Array<{ orderId: string; code: string; total: number }> = [];
 
     await this.dataSource.transaction(async (trx) => {
-      const orderRepo = trx.getRepository(Order);
-      const itemRepo = trx.getRepository(OrderItem);
-      const productRepo = trx.getRepository(Product);
-      const variantRepo = trx.getRepository(ProductVariant);
-      const shopRepo = trx.getRepository(Shop);
+      const { groups: trxGroups } = await this.groupByShop(selected, trx.getRepository(Product));
+      const shopMap = await this.getShopMap(Array.from(trxGroups.keys()), trx.getRepository(Shop));
 
-      for (const [productId, items] of groups.entries()) {
-        const p = prodMap.get(productId)!;
-
-        const shop = await shopRepo.findOne({ where: { id: p.shopId } as any });
+      for (const [shopId, items] of trxGroups.entries()) {
+        const shop = shopMap.get(shopId);
         if (!shop) throw new BadRequestException('Shop không tồn tại');
 
-        const shopLat = +(shop as any).shopLat;
-        const shopLng = +(shop as any).shopLng;
-        if (isNaN(shopLat) || isNaN(shopLng)) throw new BadRequestException('Shop chưa cấu hình tọa độ');
+        await this.ensureStockAvailableForGroup(items, trx.getRepository(ProductVariant));
 
-        // check tồn kho
-        const vIds = Array.from(new Set(items.map((i: any) => i.variantId).filter(Boolean)));
-        const vars = vIds.length ? await variantRepo.find({ where: { id: In(vIds) } as any }) : [];
-        const varMap = new Map(vars.map((v) => [v.id, v]));
-
-        for (const it of items) {
-          if (it.variantId) {
-            const v = varMap.get(it.variantId);
-            if (!v) throw new BadRequestException('Biến thể không tồn tại');
-            if (v.stock != null && v.stock < it.quantity) throw new BadRequestException(`SKU ${v.sku} không đủ tồn`);
-          } else if (p.stock != null && p.stock < it.quantity) {
-            throw new BadRequestException(`Sản phẩm ${p.title} không đủ tồn`);
-          }
-        }
-
-        const subtotalNum = items.reduce((s: number, i: any) => s + Number(i.price) * i.quantity, 0);
-        const distanceKm = haversineKm(shopLat, shopLng, +addr.lat!, +addr.lng!);
-        const shippingFeeNum = calcShippingFee(distanceKm, subtotalNum);
-        const totalNum = subtotalNum + shippingFeeNum;
-
-        // unique code
-        let code = this.genOrderCode();
-        for (let i = 0; i < 5; i++) {
-          const existed = await orderRepo.findOne({ where: { code } });
-          if (!existed) break;
-          code = this.genOrderCode();
-        }
-
-        const order = orderRepo.create({
+        const result = await this.createOrderForGroup({
+          trx,
           userId,
-          code,
+          shop,
+          items,
+          address: addr,
+          imageMap,
           paymentMethod: PaymentMethod.COD,
-          status: OrderStatus.PENDING,
           paymentStatus: PaymentStatus.UNPAID,
+          status: OrderStatus.PENDING,
           shippingStatus: ShippingStatus.PENDING,
-          addressSnapshot: {
-            fullName: addr.fullName,
-            phone: addr.phone,
-            formattedAddress: addr.formattedAddress,
-            placeId: addr.placeId,
-            lat: addr.lat,
-            lng: addr.lng,
-          },
-          subtotal: subtotalNum.toFixed(2),
-          discount: '0.00',
-          shippingFee: shippingFeeNum.toFixed(2),
-          total: totalNum.toFixed(2),
           note: dto.note ?? null,
         });
 
-        const savedOrder = await orderRepo.save(order);
-
-        for (const it of items) {
-          const nameSnapshot = it.variantName ? `${it.title} - ${it.variantName}` : it.title;
-          const imageSnapshot = it.imageUrl ?? (it.imageId ? imgMap.get(it.imageId) ?? null : null);
-          const totalLine = Number(it.price) * it.quantity;
-
-          await itemRepo.save(
-            itemRepo.create({
-              orderId: savedOrder.id,
-              productId: p.id,
-              productVariantId: it.variantId ?? null,
-              nameSnapshot,
-              imageSnapshot,
-              price: Number(it.price).toFixed(2),
-              quantity: it.quantity,
-              totalLine: totalLine.toFixed(2),
-              value1: it.value1 ?? null,
-              value2: it.value2 ?? null,
-              value3: it.value3 ?? null,
-              value4: it.value4 ?? null,
-              value5: it.value5 ?? null,
-            }),
-          );
-
-          if (it.variantId) await variantRepo.decrement({ id: it.variantId } as any, 'stock', it.quantity);
-          else await productRepo.decrement({ id: p.id } as any, 'stock', it.quantity);
-        }
-
-        createdOrders.push({ orderId: savedOrder.id, code: savedOrder.code, total: +totalNum.toFixed(2) });
+        createdOrders.push(result);
       }
     });
 
-    await this.cartService.removeMany(userId, selected.map((i: any) => Number(i.id)));
+    try {
+      await this.cartService.removeMany(userId, selected.map((i: any) => Number(i.id)));
+    } catch {
+      // ignore
+    }
+
     return { orders: createdOrders };
   }
 
-  /**
-   * ✅ Sau khi VNPAY trả thành công (00) => tạo order + trừ kho + xoá cart
-   * Idempotent: gọi nhiều lần không tạo trùng.
-   */
-  async finalizeVnPayPaid(sessionCode: string, ret: { responseCode: string; transactionNo?: string; raw: any }) {
+  async finalizeVnPayPaid(
+    sessionCode: string,
+    ret: { responseCode: string; transactionNo?: string; raw: any; amountRaw?: number },
+  ) {
     const session = await this.sessionRepo.findOne({ where: { code: sessionCode } });
     if (!session) throw new NotFoundException('Payment session not found');
 
-    // thất bại
     if (ret.responseCode !== '00') {
       session.status = PaymentSessionStatus.FAILED;
       session.paymentRef = ret.transactionNo || null;
@@ -482,151 +646,60 @@ export class OrdersService {
       return;
     }
 
-    // đã xử lý rồi
     if (session.status === PaymentSessionStatus.PAID && session.ordersJson?.result?.orders?.length) {
-      return;
+      return session.ordersJson.result.orders;
     }
 
     const checkout: CheckoutSnapshot | undefined = session.ordersJson?.checkout;
     if (!checkout) throw new BadRequestException('Session thiếu checkout snapshot');
+    if (!checkout.items?.length) throw new BadRequestException('Checkout snapshot thiếu items');
 
-    const addrLat = Number(checkout.address.lat);
-    const addrLng = Number(checkout.address.lng);
-    if (Number.isNaN(addrLat) || Number.isNaN(addrLng)) throw new BadRequestException('Checkout snapshot thiếu tọa độ');
-
-    const cartItemIds = (checkout.cartItemIds || []).map(Number);
-    const snapItems = checkout.items || [];
-    if (!snapItems.length) throw new BadRequestException('Checkout snapshot thiếu items');
-
-    // tạo order trong transaction
-    const createdOrders: Array<{ orderId: string; code: string; total: number }> = await this.dataSource.transaction(
-      async (trx) => {
+    const createdOrders: Array<{ orderId: string; code: string; total: number }> =
+      await this.dataSource.transaction(async (trx) => {
         const sessionRepo = trx.getRepository(PaymentSession);
-        const orderRepo = trx.getRepository(Order);
-        const itemRepo = trx.getRepository(OrderItem);
-        const productRepo = trx.getRepository(Product);
-        const variantRepo = trx.getRepository(ProductVariant);
-        const imageRepo = trx.getRepository(ProductImage);
-        const shopRepo = trx.getRepository(Shop);
-
-        // lock session (tránh tạo trùng)
         const locked = await sessionRepo.findOne({
           where: { code: sessionCode },
           lock: { mode: 'pessimistic_write' as any },
         });
+
         if (!locked) throw new NotFoundException('Payment session not found');
 
         if (locked.status === PaymentSessionStatus.PAID && locked.ordersJson?.result?.orders?.length) {
           return locked.ordersJson.result.orders;
         }
 
-        // load products
-        const productIds = Array.from(new Set(snapItems.map((i) => i.productId)));
-        const prods = await productRepo.find({ where: { id: In(productIds) } as any });
-        const prodMap = new Map(prods.map((p) => [p.id, p]));
-
-        // group by product
-        const groups = new Map<number, typeof snapItems>();
-        for (const it of snapItems) {
-          const p = prodMap.get(it.productId);
-          if (!p) throw new BadRequestException('Sản phẩm không tồn tại');
-          if (!groups.has(p.id)) groups.set(p.id, [] as any);
-          (groups.get(p.id) as any).push(it);
-        }
-
-        // image map
-        const imageIds = Array.from(new Set(snapItems.map((i) => i.imageId).filter(Boolean))) as number[];
-        const images = imageIds.length ? await imageRepo.find({ where: { id: In(imageIds) } as any }) : [];
-        const imgMap = new Map(images.map((im: any) => [im.id, im.url]));
+        const { groups } = await this.groupByShop(checkout.items, trx.getRepository(Product));
+        const shopMap = await this.getShopMap(Array.from(groups.keys()), trx.getRepository(Shop));
+        const imageMap = await this.getImageMap(checkout.items, trx.getRepository(ProductImage));
 
         const results: Array<{ orderId: string; code: string; total: number }> = [];
 
-        for (const [productId, items] of groups.entries()) {
-          const p: any = prodMap.get(productId)!;
-
-          const shop = await shopRepo.findOne({ where: { id: p.shopId } as any });
+        for (const [shopId, items] of groups.entries()) {
+          const shop = shopMap.get(shopId);
           if (!shop) throw new BadRequestException('Shop không tồn tại');
 
-          const shopLat = +(shop as any).shopLat;
-          const shopLng = +(shop as any).shopLng;
-          if (Number.isNaN(shopLat) || Number.isNaN(shopLng)) throw new BadRequestException('Shop chưa cấu hình tọa độ');
+          await this.ensureStockAvailableForGroup(items, trx.getRepository(ProductVariant));
 
-          // load variants
-          const vIds = Array.from(new Set(items.map((i: any) => i.variantId).filter(Boolean))) as number[];
-          const vars = vIds.length ? await variantRepo.find({ where: { id: In(vIds) } as any }) : [];
-          const varMap = new Map(vars.map((v: any) => [v.id, v]));
-
-          // check stock + compute totals
-          for (const it of items as any) {
-            if (it.variantId) {
-              const v: any = varMap.get(it.variantId);
-              if (!v) throw new BadRequestException('Biến thể không tồn tại');
-              if (v.stock != null && v.stock < it.quantity) throw new BadRequestException(`SKU ${v.sku} không đủ tồn`);
-            } else if (p.stock != null && p.stock < it.quantity) {
-              throw new BadRequestException(`Sản phẩm ${p.title} không đủ tồn`);
-            }
-          }
-
-          const subtotalNum = (items as any).reduce((s: number, i: any) => s + Number(i.price) * i.quantity, 0);
-          const distanceKm = haversineKm(shopLat, shopLng, addrLat, addrLng);
-          const shippingFeeNum = calcShippingFee(distanceKm, subtotalNum);
-          const totalNum = subtotalNum + shippingFeeNum;
-
-          // unique order code
-          let code = this.genOrderCode();
-          for (let i = 0; i < 5; i++) {
-            const existed = await orderRepo.findOne({ where: { code } });
-            if (!existed) break;
-            code = this.genOrderCode();
-          }
-
-          const order = orderRepo.create({
+          const result = await this.createOrderForGroup({
+            trx,
             userId: locked.userId,
-            code,
+            shop,
+            items,
+            address: checkout.address,
+            imageMap,
             paymentMethod: PaymentMethod.VNPAY,
-            status: OrderStatus.PAID,
             paymentStatus: PaymentStatus.PAID,
+            status: OrderStatus.PENDING,
             shippingStatus: ShippingStatus.PENDING,
             paymentRef: ret.transactionNo || null,
-            paymentMeta: { sessionCode: locked.code },
-            addressSnapshot: checkout.address,
-            subtotal: subtotalNum.toFixed(2),
-            discount: '0.00',
-            shippingFee: shippingFeeNum.toFixed(2),
-            total: totalNum.toFixed(2),
+            paymentMeta: {
+              sessionCode: locked.code,
+              vnpay: ret.raw,
+            },
             note: checkout.note ?? null,
           });
 
-          const savedOrder = await orderRepo.save(order);
-
-          for (const it of items as any) {
-            const nameSnapshot = it.variantName ? `${it.title} - ${it.variantName}` : it.title;
-            const imageSnapshot = it.imageUrl ?? (it.imageId ? imgMap.get(it.imageId) ?? null : null);
-            const totalLine = Number(it.price) * it.quantity;
-
-            await itemRepo.save(
-              itemRepo.create({
-                orderId: savedOrder.id,
-                productId: it.productId,
-                productVariantId: it.variantId ?? null,
-                nameSnapshot,
-                imageSnapshot,
-                price: Number(it.price).toFixed(2),
-                quantity: it.quantity,
-                totalLine: totalLine.toFixed(2),
-                value1: it.value1 ?? null,
-                value2: it.value2 ?? null,
-                value3: it.value3 ?? null,
-                value4: it.value4 ?? null,
-                value5: it.value5 ?? null,
-              }),
-            );
-
-            if (it.variantId) await variantRepo.decrement({ id: it.variantId } as any, 'stock', it.quantity);
-            else await productRepo.decrement({ id: it.productId } as any, 'stock', it.quantity);
-          }
-
-          results.push({ orderId: savedOrder.id, code: savedOrder.code, total: +totalNum.toFixed(2) });
+          results.push(result);
         }
 
         locked.status = PaymentSessionStatus.PAID;
@@ -639,13 +712,11 @@ export class OrdersService {
         await sessionRepo.save(locked);
 
         return results;
-      },
-    );
+      });
 
-    // xoá cart sau khi tạo order thành công
     try {
-      if (cartItemIds.length) {
-        await this.cartService.removeMany(session.userId, cartItemIds);
+      if (checkout.cartItemIds?.length) {
+        await this.cartService.removeMany(session.userId, checkout.cartItemIds.map(Number));
       }
     } catch {
       // ignore
@@ -667,69 +738,165 @@ export class OrdersService {
   async detailMine(userId: number, id: string) {
     const order = await this.orderRepo.findOne({ where: { id, userId } });
     if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
-    const items = await this.orderItemRepo.find({ where: { orderId: id } });
+
+    const items = await this.orderItemRepo.find({
+      where: { orderId: id },
+      order: { createdAt: 'ASC' },
+    });
+
     return { ...order, items };
   }
 
-  async updateStatus(
-    id: string,
-    patch: { status?: OrderStatus; paymentStatus?: PaymentStatus; shippingStatus?: ShippingStatus },
-  ) {
+  private canTransitionOrderStatus(from: OrderStatus, to: OrderStatus) {
+    const map: Record<OrderStatus, OrderStatus[]> = {
+      [OrderStatus.PENDING]: [OrderStatus.PROCESSING, OrderStatus.CANCELLED],
+      [OrderStatus.PAID]: [OrderStatus.PROCESSING, OrderStatus.SHIPPED, OrderStatus.COMPLETED, OrderStatus.CANCELLED],
+      [OrderStatus.PROCESSING]: [OrderStatus.SHIPPED, OrderStatus.CANCELLED],
+      [OrderStatus.SHIPPED]: [OrderStatus.COMPLETED],
+      [OrderStatus.COMPLETED]: [],
+      [OrderStatus.CANCELLED]: [],
+    };
+    return map[from]?.includes(to) ?? false;
+  }
+
+  private canTransitionPaymentStatus(from: PaymentStatus, to: PaymentStatus) {
+    const map: Record<PaymentStatus, PaymentStatus[]> = {
+      [PaymentStatus.UNPAID]: [PaymentStatus.PAID],
+      [PaymentStatus.PAID]: [PaymentStatus.REFUNDED],
+      [PaymentStatus.REFUNDED]: [],
+    };
+    return map[from]?.includes(to) ?? false;
+  }
+
+  private canTransitionShippingStatus(from: ShippingStatus, to: ShippingStatus) {
+    const map: Record<ShippingStatus, ShippingStatus[]> = {
+      [ShippingStatus.PENDING]: [ShippingStatus.PICKED, ShippingStatus.IN_TRANSIT, ShippingStatus.CANCELED],
+      [ShippingStatus.PICKED]: [ShippingStatus.IN_TRANSIT, ShippingStatus.CANCELED],
+      [ShippingStatus.IN_TRANSIT]: [ShippingStatus.DELIVERED, ShippingStatus.CANCELED],
+      [ShippingStatus.DELIVERED]: [ShippingStatus.RETURNED],
+      [ShippingStatus.RETURNED]: [],
+      [ShippingStatus.CANCELED]: [],
+    };
+    return map[from]?.includes(to) ?? false;
+  }
+
+  async updateStatus(id: string, patch: UpdateOrderStatusDto) {
+    if (!patch.status && !patch.paymentStatus && !patch.shippingStatus) {
+      throw new BadRequestException('Không có trường nào để cập nhật');
+    }
+
     const order = await this.orderRepo.findOne({ where: { id } });
     if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
 
-    if (patch.status) order.status = patch.status;
-    if (patch.paymentStatus) order.paymentStatus = patch.paymentStatus;
-    if (patch.shippingStatus) order.shippingStatus = patch.shippingStatus;
+    const oldStatus = order.status;
 
-    order.total = (Number(order.subtotal) - Number(order.discount) + Number(order.shippingFee)).toFixed(2);
-    return this.orderRepo.save(order);
-  }
+    let nextStatus = order.status;
+    let nextPaymentStatus = order.paymentStatus;
+    let nextShippingStatus = order.shippingStatus;
 
-  async confirmReceived(userId: number, orderId: string) {
-    const order = await this.orderRepo.findOne({ where: { id: orderId, userId } });
-    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
-
-    if (order.shippingStatus !== ShippingStatus.DELIVERED) {
-      throw new BadRequestException('Đơn hàng chưa ở trạng thái DELIVERED nên chưa thể xác nhận nhận hàng');
+    if (patch.paymentStatus && patch.paymentStatus !== order.paymentStatus) {
+      if (!this.canTransitionPaymentStatus(order.paymentStatus, patch.paymentStatus)) {
+        throw new BadRequestException('Chuyển trạng thái thanh toán không hợp lệ');
+      }
+      nextPaymentStatus = patch.paymentStatus;
     }
 
-    // đã completed rồi thì thôi
-    if (order.status === OrderStatus.COMPLETED) return order;
-
-    order.status = OrderStatus.COMPLETED;
-
-    // COD thường thanh toán khi nhận hàng
-    if (order.paymentMethod === PaymentMethod.COD && order.paymentStatus !== PaymentStatus.PAID) {
-      order.paymentStatus = PaymentStatus.PAID;
+    if (patch.shippingStatus && patch.shippingStatus !== order.shippingStatus) {
+      if (!this.canTransitionShippingStatus(order.shippingStatus, patch.shippingStatus)) {
+        throw new BadRequestException('Chuyển trạng thái vận chuyển không hợp lệ');
+      }
+      nextShippingStatus = patch.shippingStatus;
     }
+
+    if (patch.status && patch.status !== order.status) {
+      if (patch.status === OrderStatus.PAID) {
+        throw new BadRequestException('Không cập nhật order.status = PAID trực tiếp');
+      }
+      if (!this.canTransitionOrderStatus(order.status, patch.status)) {
+        throw new BadRequestException('Chuyển trạng thái đơn hàng không hợp lệ');
+      }
+      nextStatus = patch.status;
+    }
+
+    if (!patch.status) {
+      if (
+        [ShippingStatus.PICKED, ShippingStatus.IN_TRANSIT].includes(nextShippingStatus) &&
+        nextStatus === OrderStatus.PENDING
+      ) {
+        nextStatus = OrderStatus.PROCESSING;
+      }
+
+      if (
+        nextShippingStatus === ShippingStatus.DELIVERED &&
+        ![OrderStatus.COMPLETED, OrderStatus.CANCELLED].includes(nextStatus)
+      ) {
+        nextStatus = OrderStatus.SHIPPED;
+      }
+
+      if (nextShippingStatus === ShippingStatus.CANCELED) {
+        nextStatus = OrderStatus.CANCELLED;
+      }
+    }
+
+    if (
+      nextStatus === OrderStatus.COMPLETED &&
+      ![ShippingStatus.DELIVERED, ShippingStatus.RETURNED].includes(nextShippingStatus)
+    ) {
+      throw new BadRequestException('Chỉ được hoàn tất khi đơn đã giao');
+    }
+
+    order.status = nextStatus;
+    order.paymentStatus = nextPaymentStatus;
+    order.shippingStatus = nextShippingStatus;
 
     const saved = await this.orderRepo.save(order);
 
-    // ✅ Chỉ tính thống kê khi user xác nhận nhận hàng (kết thúc)
-    await this.applyShopStatsOnCompleted(orderId);
+    if (oldStatus !== OrderStatus.COMPLETED && saved.status === OrderStatus.COMPLETED) {
+      await this.applyShopStatsOnCompleted(saved.id);
+    }
 
     return saved;
   }
 
-  async requestReturn(userId: number, orderId: string) {
-    const order = await this.orderRepo.findOne({ where: { id: orderId, userId } });
+  async confirmReceived(userId: number, id: string) {
+    const order = await this.orderRepo.findOne({ where: { id, userId } });
     if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
 
-    if (order.shippingStatus !== ShippingStatus.DELIVERED) {
-      throw new BadRequestException('Chỉ có thể hoàn hàng khi đơn đã giao (DELIVERED)');
-    }
     if (order.status === OrderStatus.COMPLETED) return order;
+    if (order.status === OrderStatus.CANCELLED) {
+      throw new BadRequestException('Đơn đã bị huỷ');
+    }
+    if (order.shippingStatus !== ShippingStatus.DELIVERED) {
+      throw new BadRequestException('Chỉ xác nhận khi đơn đã giao thành công');
+    }
 
     order.status = OrderStatus.COMPLETED;
-    order.shippingStatus = ShippingStatus.RETURNED;
-
-    // nếu đã thanh toán thì đánh dấu refunded (logic đơn giản)
-    if (order.paymentStatus === PaymentStatus.PAID) {
-      order.paymentStatus = PaymentStatus.REFUNDED;
-    }
-
-    return this.orderRepo.save(order);
+    const saved = await this.orderRepo.save(order);
+    await this.applyShopStatsOnCompleted(saved.id);
+    return saved;
   }
 
+  async requestReturn(userId: number, id: string) {
+    const order = await this.orderRepo.findOne({ where: { id, userId } });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+
+    if (order.status === OrderStatus.CANCELLED) {
+      throw new BadRequestException('Đơn đã bị huỷ');
+    }
+
+    if (
+      order.shippingStatus !== ShippingStatus.DELIVERED &&
+      order.shippingStatus !== ShippingStatus.RETURNED &&
+      order.status !== OrderStatus.COMPLETED
+    ) {
+      throw new BadRequestException('Chỉ yêu cầu trả hàng sau khi đơn đã giao');
+    }
+
+    if (order.shippingStatus === ShippingStatus.RETURNED) {
+      return order;
+    }
+
+    order.shippingStatus = ShippingStatus.RETURNED;
+    return this.orderRepo.save(order);
+  }
 }

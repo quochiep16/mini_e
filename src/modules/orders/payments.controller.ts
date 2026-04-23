@@ -6,7 +6,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PaymentSession, PaymentSessionStatus } from './entities/payment-session.entity';
 import { OrdersService } from './orders.service';
-import { Public } from 'src/common/decorators/public.decorator';
+import { Public } from '../../common/decorators/public.decorator';
 
 @Controller('payments')
 export class PaymentsController {
@@ -22,7 +22,11 @@ export class PaymentsController {
     return `${String(base).replace(/\/$/, '')}${path.startsWith('/') ? '' : '/'}${path}`;
   }
 
-  // Browser redirect URL
+  private amountMatches(session: PaymentSession, ret: { amountRaw?: number }) {
+    if (!Number.isFinite(ret.amountRaw)) return true;
+    return Math.round(Number(session.amount) * 100) === Number(ret.amountRaw);
+  }
+
   @Public()
   @Get('vnpay/return')
   async vnpReturn(@Query() query: any, @Res() res: Response) {
@@ -38,7 +42,14 @@ export class PaymentsController {
       return res.redirect(this.fePath(`/payment-result?status=session_not_found&code=${encodeURIComponent(code)}`));
     }
 
-    // thất bại
+    if (!this.amountMatches(session, ret)) {
+      session.status = PaymentSessionStatus.FAILED;
+      session.paymentMeta = { ...(session.paymentMeta || {}), amountMismatch: true, raw: ret.raw };
+      await this.sessionRepo.save(session);
+
+      return res.redirect(this.fePath(`/payment-result?status=amount_mismatch&code=${encodeURIComponent(code)}`));
+    }
+
     if (ret.responseCode !== '00') {
       session.status = PaymentSessionStatus.FAILED;
       session.paymentRef = ret.transactionNo || null;
@@ -52,22 +63,21 @@ export class PaymentsController {
       );
     }
 
-    // thành công => tạo order
     try {
       await this.ordersService.finalizeVnPayPaid(code, ret);
     } catch (e: any) {
-      // nếu finalize lỗi, vẫn redirect để user thấy trạng thái
       return res.redirect(
-        this.fePath(`/payment-result?status=finalize_error&code=${encodeURIComponent(code)}&msg=${encodeURIComponent(
-          e?.message || 'finalize error',
-        )}`),
+        this.fePath(
+          `/payment-result?status=finalize_error&code=${encodeURIComponent(code)}&msg=${encodeURIComponent(
+            e?.message || 'finalize error',
+          )}`,
+        ),
       );
     }
 
     return res.redirect(this.fePath(`/orders?paid=1&session=${encodeURIComponent(code)}`));
   }
 
-  // IPN server-to-server
   @Public()
   @Get('vnpay/ipn')
   async vnpIpn(@Query() query: any, @Res() res: Response) {
@@ -77,10 +87,17 @@ export class PaymentsController {
     const session = await this.sessionRepo.findOne({ where: { code: ret.code } });
     if (!session) return res.json({ RspCode: '01', Message: 'Payment session not found' });
 
-    // đã PAID thì OK
-    if (session.status === PaymentSessionStatus.PAID) return res.json({ RspCode: '00', Message: 'OK' });
+    if (!this.amountMatches(session, ret)) {
+      session.status = PaymentSessionStatus.FAILED;
+      session.paymentMeta = { ...(session.paymentMeta || {}), amountMismatch: true, raw: ret.raw };
+      await this.sessionRepo.save(session);
+      return res.json({ RspCode: '04', Message: 'Invalid amount' });
+    }
 
-    // thất bại
+    if (session.status === PaymentSessionStatus.PAID) {
+      return res.json({ RspCode: '00', Message: 'OK' });
+    }
+
     if (ret.responseCode !== '00') {
       session.status = PaymentSessionStatus.FAILED;
       session.paymentRef = ret.transactionNo || null;
@@ -89,11 +106,10 @@ export class PaymentsController {
       return res.json({ RspCode: '00', Message: 'OK' });
     }
 
-    // thành công => finalize
     try {
       await this.ordersService.finalizeVnPayPaid(ret.code, ret);
     } catch {
-      // IPN vẫn trả OK để tránh VNPAY retry spam
+      // tránh retry spam từ VNPAY
     }
 
     return res.json({ RspCode: '00', Message: 'OK' });

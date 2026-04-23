@@ -1,4 +1,15 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+  Req,
+  SetMetadata,
+  UseGuards,
+} from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto, PreviewOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
@@ -17,7 +28,9 @@ export class OrdersController {
 
   @Post('orders')
   async create(@CurrentUser('sub') userId: number, @Req() req: any, @Body() dto: CreateOrderDto) {
-    const data = await this.service.create(userId, dto, req.ip);
+    const forwarded = req?.headers?.['x-forwarded-for'];
+    const rawIp = Array.isArray(forwarded) ? forwarded[0] : forwarded || req.ip;
+    const data = await this.service.create(userId, dto, rawIp);
     return { success: true, data };
   }
 
@@ -37,6 +50,7 @@ export class OrdersController {
 
   @Post('orders/:id/status')
   @UseGuards(RolesGuard)
+  @SetMetadata('roles', ['ADMIN'])
   async updateStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateOrderStatusDto) {
     const data = await this.service.updateStatus(id, dto);
     return { success: true, data };
@@ -53,5 +67,4 @@ export class OrdersController {
     const data = await this.service.requestReturn(userId, id);
     return { success: true, data };
   }
-
 }

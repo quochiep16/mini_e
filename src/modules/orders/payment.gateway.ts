@@ -11,6 +11,7 @@ type VnpConfig = {
   returnUrl: string;
   locale: string;
   currency: string;
+  expireMinutes: number;
 };
 
 @Injectable()
@@ -18,7 +19,6 @@ export class PaymentGatewayService {
   constructor(private readonly config: ConfigService) {}
 
   private getVnpConfig(): VnpConfig {
-    // Hỗ trợ cả VNPAY_* và VNP_* (fallback)
     const version = this.config.get<string>('VNPAY_VERSION') || this.config.get<string>('VNP_VERSION') || '2.1.0';
     const tmnCode = this.config.get<string>('VNPAY_TMN_CODE') || this.config.get<string>('VNP_TMN_CODE') || '';
     const hashSecret =
@@ -29,6 +29,9 @@ export class PaymentGatewayService {
       this.config.get<string>('VNPAY_RETURN_URL') || this.config.get<string>('VNP_RETURN_URL') || '';
     const locale = this.config.get<string>('VNPAY_LOCALE') || this.config.get<string>('VNP_LOCALE') || 'vn';
     const currency = this.config.get<string>('VNPAY_CURRENCY') || this.config.get<string>('VNP_CURRENCY') || 'VND';
+    const expireMinutes = Number(
+      this.config.get<string>('VNPAY_EXPIRE_MINUTES') || this.config.get<string>('VNP_EXPIRE_MINUTES') || '15',
+    );
 
     const missing: string[] = [];
     if (!tmnCode) missing.push('VNPAY_TMN_CODE (or VNP_TMN_CODE)');
@@ -40,12 +43,22 @@ export class PaymentGatewayService {
       throw new BadRequestException(`VNPAY config missing: ${missing.join(', ')}`);
     }
 
-    return { version, tmnCode, hashSecret, endpoint, returnUrl, locale, currency };
+    return {
+      version,
+      tmnCode,
+      hashSecret,
+      endpoint,
+      returnUrl,
+      locale,
+      currency,
+      expireMinutes: Number.isFinite(expireMinutes) && expireMinutes > 0 ? expireMinutes : 15,
+    };
   }
 
   createVnPayUrl(params: { code: string; amount: number; ipAddress: string; bankCode?: string }) {
     const vnp = this.getVnpConfig();
-    const createDate = this.formatDate(new Date());
+    const now = new Date();
+    const expire = new Date(now.getTime() + vnp.expireMinutes * 60 * 1000);
 
     const vnpParams: Record<string, any> = {
       vnp_Version: vnp.version,
@@ -56,10 +69,11 @@ export class PaymentGatewayService {
       vnp_TxnRef: params.code,
       vnp_OrderInfo: `Thanh toan don hang ${params.code}`,
       vnp_OrderType: 'other',
-      vnp_Amount: Math.round(params.amount * 100), // bắt buộc *100
+      vnp_Amount: Math.round(params.amount * 100),
       vnp_ReturnUrl: vnp.returnUrl,
       vnp_IpAddr: params.ipAddress || '127.0.0.1',
-      vnp_CreateDate: createDate,
+      vnp_CreateDate: this.formatDate(now),
+      vnp_ExpireDate: this.formatDate(expire),
     };
 
     if (params.bankCode) vnpParams.vnp_BankCode = params.bankCode;
@@ -80,8 +94,6 @@ export class PaymentGatewayService {
   }
 
   async urlToQrDataUrl(url: string): Promise<string> {
-    // QR này là QR "mở link" (không phải VNPAYQR payload chuẩn)
-    // Bạn không cần dùng nếu redirect sang VNPAY gateway (QR chuẩn sẽ nằm bên VNPAY).
     return QRCode.toDataURL(url, {
       errorCorrectionLevel: 'H',
       margin: 4,
@@ -103,19 +115,28 @@ export class PaymentGatewayService {
       .join('&');
 
     const check = crypto.createHmac('sha512', vnp.hashSecret).update(hashData).digest('hex');
-
     const valid = check.toLowerCase() === secureHash.toLowerCase();
+
+    const amountRawValue = input.vnp_Amount != null ? Number(input.vnp_Amount) : undefined;
+    const amount =
+      typeof amountRawValue === 'number' && Number.isFinite(amountRawValue)
+        ? amountRawValue / 100
+        : undefined;
 
     return {
       valid,
       code: input.vnp_TxnRef,
       responseCode: input.vnp_ResponseCode,
       transactionNo: input.vnp_TransactionNo,
+      bankCode: input.vnp_BankCode,
+      bankTranNo: input.vnp_BankTranNo,
+      payDate: input.vnp_PayDate,
+      amount,
+      amountRaw: amountRawValue,
       raw: input,
     };
   }
 
-  // urlencode kiểu VNPAY: space => +
   private vnpEncode(s: string) {
     return encodeURIComponent(s).replace(/%20/g, '+');
   }
