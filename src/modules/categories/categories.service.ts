@@ -6,175 +6,362 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Like, Not, Repository } from 'typeorm';
-import { Gender, UserRole } from '../users/enums/user.enum'; 
+import { Not, Repository } from 'typeorm';
+import { Product } from '../products/entities/product.entity';
+import { UserRole } from '../users/enums/user.enum';
 import { Category } from './entities/category.entity';
 import { CreateCategoryDto } from './dto/create-category.dto';
-import { UpdateCategoryDto } from './dto/update-category.dto';
 import { SearchCategoriesDto } from './dto/search-categories.dto';
-import { IsNull } from 'typeorm';
-
+import { UpdateCategoryDto } from './dto/update-category.dto';
 
 @Injectable()
 export class CategoriesService {
-  constructor(@InjectRepository(Category) private readonly categoriesRepo: Repository<Category>) {}
+  constructor(
+    @InjectRepository(Category)
+    private readonly categoriesRepo: Repository<Category>,
 
-  private isUniqueViolation(e: any) {
-    return e?.code === 'ER_DUP_ENTRY' || /unique/i.test(e?.message ?? '');
+    @InjectRepository(Product)
+    private readonly productsRepo: Repository<Product>,
+  ) {}
+
+  private assertAdmin(role: UserRole) {
+    if (role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Chỉ ADMIN mới được thao tác category');
+    }
+  }
+
+  private isUniqueViolation(error: any) {
+    return (
+      error?.code === 'ER_DUP_ENTRY' ||
+      error?.errno === 1062 ||
+      /unique/i.test(error?.message ?? '')
+    );
   }
 
   private slugify(input: string): string {
     const base = (input ?? '')
+      .toString()
+      .trim()
       .toLowerCase()
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd')
+      .replace(/Đ/g, 'd')
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
+
     return base || 'category';
+  }
+
+  private async slugExists(slug: string, ignoreId?: number): Promise<boolean> {
+    const qb = this.categoriesRepo
+      .createQueryBuilder('category')
+      .withDeleted()
+      .where('category.slug = :slug', { slug });
+
+    if (ignoreId) {
+      qb.andWhere('category.id != :ignoreId', { ignoreId });
+    }
+
+    const count = await qb.getCount();
+
+    return count > 0;
   }
 
   private async ensureUniqueSlug(base: string, ignoreId?: number): Promise<string> {
     const slugBase = this.slugify(base);
+
     let candidate = slugBase;
     let suffix = 1;
 
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const exists = await this.categoriesRepo.exists({
-        where: {
-          slug: candidate,
-          ...(ignoreId ? { id: Not(ignoreId) } : {}),
-        },
-      });
-      if (!exists) return candidate;
+    while (await this.slugExists(candidate, ignoreId)) {
       suffix += 1;
       candidate = `${slugBase}-${suffix}`;
     }
+
+    return candidate;
   }
 
-  private assertAdmin(role: UserRole) {
-    if (role !== UserRole.ADMIN) throw new ForbiddenException('Chỉ ADMIN mới được thao tác');
+  private async findCategoryOrFail(id: number): Promise<Category> {
+    const category = await this.categoriesRepo.findOne({
+      where: { id },
+    });
+
+    if (!category) {
+      throw new NotFoundException('Không tìm thấy category');
+    }
+
+    return category;
+  }
+
+  private async ensureParentValid(parentId: number, currentId?: number) {
+    if (currentId && parentId === currentId) {
+      throw new BadRequestException('parentId không hợp lệ');
+    }
+
+    const parent = await this.categoriesRepo.findOne({
+      where: { id: parentId },
+    });
+
+    if (!parent) {
+      throw new BadRequestException('parentId không tồn tại');
+    }
+
+    if (currentId) {
+      await this.ensureNoParentCycle(currentId, parentId);
+    }
+
+    return parent;
+  }
+
+  private async ensureNoParentCycle(currentId: number, newParentId: number) {
+    let parentId: number | null | undefined = newParentId;
+
+    while (parentId) {
+      if (parentId === currentId) {
+        throw new BadRequestException(
+          'Không thể chọn category con/cháu làm category cha',
+        );
+      }
+
+      const parent = await this.categoriesRepo.findOne({
+        where: { id: parentId },
+        select: ['id', 'parentId'],
+      });
+
+      parentId = parent?.parentId;
+    }
   }
 
   async create(role: UserRole, dto: CreateCategoryDto) {
     this.assertAdmin(role);
 
-    if (dto.parentId) {
-      const parent = await this.categoriesRepo.findOne({ where: { id: dto.parentId } });
-      if (!parent) throw new BadRequestException('parentId không tồn tại');
+    const name = dto.name.trim();
+
+    if (!name) {
+      throw new BadRequestException('name không được để trống');
     }
 
-    const slug = await this.ensureUniqueSlug(dto.slug ?? dto.name);
+    if (dto.parentId) {
+      await this.ensureParentValid(dto.parentId);
+    }
+
+    const slug = await this.ensureUniqueSlug(dto.slug?.trim() || name);
 
     try {
-      const cat = this.categoriesRepo.create({
-        name: dto.name.trim(),
+      const category = this.categoriesRepo.create({
+        name,
         slug,
-        description: dto.description ?? null,
+        description: dto.description?.trim() || null,
         parentId: dto.parentId ?? null,
         sortOrder: dto.sortOrder ?? 0,
         isActive: dto.isActive ?? true,
       });
-      return await this.categoriesRepo.save(cat);
-    } catch (e) {
-      if (this.isUniqueViolation(e)) throw new ConflictException('Slug category đã tồn tại');
-      throw e;
+
+      return await this.categoriesRepo.save(category);
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException('Slug category đã tồn tại');
+      }
+
+      throw error;
     }
   }
 
   async findAllPublic(query: SearchCategoriesDto) {
-    const where: any = { deletedAt: null };
+    const qb = this.categoriesRepo.createQueryBuilder('category');
 
-    if (query.parentId !== undefined) where.parentId = query.parentId;
-    if (query.isActive !== undefined) where.isActive = query.isActive;
-    else where.isActive = true;
-
-    if (query.q?.trim()) {
-      // đơn giản: q match name hoặc slug
-      where.name = Like(`%${query.q.trim()}%`);
+    if (query.parentId !== undefined) {
+      qb.andWhere('category.parent_id = :parentId', {
+        parentId: query.parentId,
+      });
     }
 
-    const items = await this.categoriesRepo.find({
-      where,
-      order: { sortOrder: 'ASC', name: 'ASC', id: 'ASC' },
-    });
+    if (query.isActive !== undefined) {
+      qb.andWhere('category.is_active = :isActive', {
+        isActive: query.isActive,
+      });
+    } else {
+      qb.andWhere('category.is_active = :isActive', {
+        isActive: true,
+      });
+    }
 
-    return items;
+    if (query.q?.trim()) {
+      qb.andWhere('(category.name LIKE :keyword OR category.slug LIKE :keyword)', {
+        keyword: `%${query.q.trim()}%`,
+      });
+    }
+
+    return qb
+      .orderBy('category.sort_order', 'ASC')
+      .addOrderBy('category.name', 'ASC')
+      .addOrderBy('category.id', 'ASC')
+      .getMany();
   }
 
   async findTreePublic() {
     const items = await this.categoriesRepo.find({
-      where: { isActive: true, deletedAt: IsNull() },
-      order: { sortOrder: 'ASC', name: 'ASC', id: 'ASC' },
+      where: {
+        isActive: true,
+      },
+      order: {
+        sortOrder: 'ASC',
+        name: 'ASC',
+        id: 'ASC',
+      },
     });
 
-    const byId = new Map<number, any>();
-    items.forEach((c) => byId.set(c.id, { ...c, children: [] }));
+    const byId = new Map<number, Category & { children: any[] }>();
 
-    const roots: any[] = [];
-    for (const c of items) {
-      const node = byId.get(c.id);
-      if (c.parentId && byId.has(c.parentId)) {
-        byId.get(c.parentId).children.push(node);
+    for (const category of items) {
+      byId.set(category.id, {
+        ...category,
+        children: [],
+      });
+    }
+
+    const roots: Array<Category & { children: any[] }> = [];
+
+    for (const category of items) {
+      const node = byId.get(category.id);
+
+      if (!node) {
+        continue;
+      }
+
+      if (category.parentId && byId.has(category.parentId)) {
+        byId.get(category.parentId)?.children.push(node);
       } else {
         roots.push(node);
       }
     }
+
     return roots;
   }
 
   async findOnePublic(id: number) {
-    const cat = await this.categoriesRepo.findOne({ where: { isActive: true, deletedAt: IsNull() },
- });
-    if (!cat) throw new NotFoundException('Không tìm thấy category');
-    return cat;
+    const category = await this.categoriesRepo.findOne({
+      where: {
+        id,
+        isActive: true,
+      },
+      relations: {
+        parent: true,
+        children: true,
+      },
+      order: {
+        children: {
+          sortOrder: 'ASC',
+          name: 'ASC',
+          id: 'ASC',
+        },
+      },
+    });
+
+    if (!category) {
+      throw new NotFoundException('Không tìm thấy category');
+    }
+
+    category.children = (category.children ?? []).filter((child) => child.isActive);
+
+    return category;
   }
 
   async update(role: UserRole, id: number, dto: UpdateCategoryDto) {
     this.assertAdmin(role);
 
-    const cat = await this.categoriesRepo.findOne({ where: { id } });
-    if (!cat) throw new NotFoundException('Không tìm thấy category');
+    const category = await this.findCategoryOrFail(id);
 
     if (dto.parentId !== undefined) {
       if (dto.parentId === null) {
-        cat.parentId = null;
+        category.parentId = null;
       } else {
-        if (dto.parentId === id) throw new BadRequestException('parentId không hợp lệ');
-        const parent = await this.categoriesRepo.findOne({ where: { id: dto.parentId } });
-        if (!parent) throw new BadRequestException('parentId không tồn tại');
-        cat.parentId = dto.parentId;
+        await this.ensureParentValid(dto.parentId, id);
+        category.parentId = dto.parentId;
       }
     }
 
-    if (dto.name !== undefined) cat.name = dto.name.trim();
-    if (dto.description !== undefined) cat.description = dto.description ?? null;
-    if (dto.sortOrder !== undefined) cat.sortOrder = dto.sortOrder;
-    if (dto.isActive !== undefined) cat.isActive = dto.isActive;
+    if (dto.name !== undefined) {
+      const name = dto.name.trim();
 
-    if (dto.slug?.trim()) {
-      cat.slug = await this.ensureUniqueSlug(dto.slug, cat.id);
-    } else if (dto.name?.trim()) {
-      // nếu đổi name mà không truyền slug -> tự update slug unique theo name
-      cat.slug = await this.ensureUniqueSlug(dto.name, cat.id);
+      if (!name) {
+        throw new BadRequestException('name không được để trống');
+      }
+
+      category.name = name;
+    }
+
+    if (dto.description !== undefined) {
+      category.description = dto.description?.trim() || null;
+    }
+
+    if (dto.sortOrder !== undefined) {
+      category.sortOrder = dto.sortOrder;
+    }
+
+    if (dto.isActive !== undefined) {
+      category.isActive = dto.isActive;
+    }
+
+    if (dto.slug !== undefined) {
+      const slugInput = dto.slug.trim();
+
+      if (!slugInput) {
+        throw new BadRequestException('slug không được để trống');
+      }
+
+      category.slug = await this.ensureUniqueSlug(slugInput, category.id);
+    } else if (dto.name !== undefined) {
+      category.slug = await this.ensureUniqueSlug(category.name, category.id);
     }
 
     try {
-      return await this.categoriesRepo.save(cat);
-    } catch (e) {
-      if (this.isUniqueViolation(e)) throw new ConflictException('Slug category đã tồn tại');
-      throw e;
+      return await this.categoriesRepo.save(category);
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException('Slug category đã tồn tại');
+      }
+
+      throw error;
     }
   }
 
   async remove(role: UserRole, id: number) {
     this.assertAdmin(role);
 
-    const cat = await this.categoriesRepo.findOne({ where: { id } });
-    if (!cat) throw new NotFoundException('Không tìm thấy category');
+    const category = await this.findCategoryOrFail(id);
 
-    // soft delete (giữ lịch sử)
-    await this.categoriesRepo.softDelete({ id });
-    return { success: true };
+    const childCount = await this.categoriesRepo.count({
+      where: {
+        parentId: id,
+      },
+    });
+
+    if (childCount > 0) {
+      throw new BadRequestException(
+        'Category đang có category con, không thể xóa. Hãy xóa hoặc chuyển category con trước.',
+      );
+    }
+
+    const productCount = await this.productsRepo
+      .createQueryBuilder('product')
+      .where('product.category_id = :categoryId', { categoryId: id })
+      .getCount();
+
+    if (productCount > 0) {
+      throw new BadRequestException(
+        'Category đang có sản phẩm, không thể xóa. Bạn nên tắt isActive thay vì xóa.',
+      );
+    }
+
+    await this.categoriesRepo.softDelete({
+      id: category.id,
+    });
+
+    return {
+      id: category.id,
+      deleted: true,
+    };
   }
 }

@@ -1,46 +1,73 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, ParseIntPipe } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Gender, UserRole } from '../users/enums/user.enum'; 
+import { UserRole } from '../users/enums/user.enum';
 import { CategoriesService } from './categories.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
-import { UpdateCategoryDto } from './dto/update-category.dto';
 import { SearchCategoriesDto } from './dto/search-categories.dto';
+import { UpdateCategoryDto } from './dto/update-category.dto';
 
 @Controller('categories')
 export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 
-  // ===== public =====
+  // Public: user, seller, guest đều xem được category active
   @Public()
   @Get()
-  async list(@Query() q: SearchCategoriesDto) {
-    const data = await this.categoriesService.findAllPublic(q);
-    return { success: true, data };
+  async list(@Query() query: SearchCategoriesDto) {
+    const data = await this.categoriesService.findAllPublic(query);
+
+    return {
+      success: true,
+      data,
+    };
   }
 
   @Public()
   @Get('tree')
   async tree() {
     const data = await this.categoriesService.findTreePublic();
-    return { success: true, data };
+
+    return {
+      success: true,
+      data,
+    };
   }
 
   @Public()
   @Get(':id')
   async detail(@Param('id', ParseIntPipe) id: number) {
     const data = await this.categoriesService.findOnePublic(id);
-    return { success: true, data };
+
+    return {
+      success: true,
+      data,
+    };
   }
 
-  // ===== admin =====
+  // Admin only
   @Post()
   async create(
     @CurrentUser('role') role: UserRole,
     @Body() dto: CreateCategoryDto,
   ) {
     const data = await this.categoriesService.create(role, dto);
-    return { success: true, data };
+
+    return {
+      success: true,
+      message: 'Tạo category thành công',
+      data,
+    };
   }
 
   @Patch(':id')
@@ -50,7 +77,12 @@ export class CategoriesController {
     @Body() dto: UpdateCategoryDto,
   ) {
     const data = await this.categoriesService.update(role, id, dto);
-    return { success: true, data };
+
+    return {
+      success: true,
+      message: 'Cập nhật category thành công',
+      data,
+    };
   }
 
   @Delete(':id')
@@ -59,6 +91,11 @@ export class CategoriesController {
     @Param('id', ParseIntPipe) id: number,
   ) {
     const data = await this.categoriesService.remove(role, id);
-    return { success: true, data };
+
+    return {
+      success: true,
+      message: 'Xóa category thành công',
+      data,
+    };
   }
 }
