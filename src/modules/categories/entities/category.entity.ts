@@ -18,13 +18,13 @@ import { Product } from '../../products/entities/product.entity';
 @Index('IDX_categories_active', ['isActive'])
 export class Category {
   @PrimaryGeneratedColumn({ type: 'int', unsigned: true })
-  id: number;
+  id!: number;
 
   @Column({ length: 120 })
-  name: string;
+  name!: string;
 
   @Column({ length: 160 })
-  slug: string;
+  slug!: string;
 
   @Column({ type: 'text', nullable: true })
   description?: string | null;
@@ -32,28 +32,31 @@ export class Category {
   @Column({ name: 'parent_id', type: 'int', unsigned: true, nullable: true })
   parentId?: number | null;
 
-  @ManyToOne(() => Category, (c) => c.children, { nullable: true, onDelete: 'SET NULL' })
+  @ManyToOne(() => Category, (category) => category.children, {
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
   @JoinColumn({ name: 'parent_id' })
   parent?: Category | null;
 
-  @OneToMany(() => Category, (c) => c.parent)
-  children: Category[];
+  @OneToMany(() => Category, (category) => category.parent)
+  children!: Category[];
 
-  @Column({ name: 'is_active', type: 'tinyint', default: 1 })
-  isActive: boolean;
+  @Column({ name: 'is_active', type: 'tinyint', width: 1, default: 1 })
+  isActive!: boolean;
 
   @Column({ name: 'sort_order', type: 'int', default: 0 })
-  sortOrder: number;
+  sortOrder!: number;
 
   @CreateDateColumn({ name: 'created_at', type: 'datetime' })
-  createdAt: Date;
+  createdAt!: Date;
 
   @UpdateDateColumn({ name: 'updated_at', type: 'datetime' })
-  updatedAt: Date;
+  updatedAt!: Date;
 
   @DeleteDateColumn({ name: 'deleted_at', type: 'datetime', nullable: true })
   deletedAt?: Date | null;
 
-  @OneToMany(() => Product, (p) => p.category)
-  products: Product[];
+  @OneToMany(() => Product, (product) => product.category)
+  products!: Product[];
 }

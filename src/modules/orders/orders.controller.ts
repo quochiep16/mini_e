@@ -7,7 +7,6 @@ import {
   Post,
   Query,
   Req,
-  SetMetadata,
   UseGuards,
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
@@ -27,15 +26,21 @@ export class OrdersController {
   }
 
   @Post('orders')
-  async create(@CurrentUser('sub') userId: number, @Req() req: any, @Body() dto: CreateOrderDto) {
-    const forwarded = req?.headers?.['x-forwarded-for'];
-    const rawIp = Array.isArray(forwarded) ? forwarded[0] : forwarded || req.ip;
-    const data = await this.service.create(userId, dto, rawIp);
+  async create(
+    @CurrentUser('sub') userId: number,
+    @Req() req: any,
+    @Body() dto: CreateOrderDto,
+  ) {
+    const data = await this.service.create(userId, dto, req.ip);
     return { success: true, data };
   }
 
   @Get('orders')
-  async list(@CurrentUser('sub') userId: number, @Query('page') page?: string, @Query('limit') limit?: string) {
+  async list(
+    @CurrentUser('sub') userId: number,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
     const p = Math.max(1, parseInt(page || '1', 10));
     const l = Math.max(1, Math.min(100, parseInt(limit || '20', 10)));
     const data = await this.service.listMine(userId, p, l);
@@ -50,20 +55,31 @@ export class OrdersController {
 
   @Post('orders/:id/status')
   @UseGuards(RolesGuard)
-  @SetMetadata('roles', ['ADMIN'])
   async updateStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateOrderStatusDto) {
     const data = await this.service.updateStatus(id, dto);
     return { success: true, data };
   }
 
+  @Post('orders/:id/cancel')
+  async cancelMine(@CurrentUser('sub') userId: number, @Param('id', ParseUUIDPipe) id: string) {
+    const data = await this.service.cancelMine(userId, id);
+    return { success: true, data };
+  }
+
   @Post('orders/:id/confirm-received')
-  async confirmReceived(@CurrentUser('sub') userId: number, @Param('id', ParseUUIDPipe) id: string) {
+  async confirmReceived(
+    @CurrentUser('sub') userId: number,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
     const data = await this.service.confirmReceived(userId, id);
     return { success: true, data };
   }
 
   @Post('orders/:id/request-return')
-  async requestReturn(@CurrentUser('sub') userId: number, @Param('id', ParseUUIDPipe) id: string) {
+  async requestReturn(
+    @CurrentUser('sub') userId: number,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
     const data = await this.service.requestReturn(userId, id);
     return { success: true, data };
   }

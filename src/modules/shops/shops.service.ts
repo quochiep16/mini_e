@@ -263,9 +263,9 @@ export class ShopsService {
 
   private isValidNextShipping(prev: ShippingStatus, next: ShippingStatus) {
     const allow: Record<string, ShippingStatus[]> = {
-      PENDING: [ShippingStatus.IN_TRANSIT, ShippingStatus.CANCELED],
-      IN_TRANSIT: [ShippingStatus.DELIVERED, ShippingStatus.CANCELED],
+      PENDING: [ShippingStatus.PICKED, ShippingStatus.CANCELED],
       PICKED: [ShippingStatus.IN_TRANSIT, ShippingStatus.CANCELED],
+      IN_TRANSIT: [],
       DELIVERED: [],
       RETURNED: [],
       CANCELED: [],
@@ -302,15 +302,12 @@ export class ShopsService {
 
     order.shippingStatus = shippingStatus as any;
 
-    if (shippingStatus === ShippingStatus.CANCELED) {
-      order.status = OrderStatus.CANCELLED;
-    } else if (shippingStatus === ShippingStatus.PENDING) {
+    if (shippingStatus === ShippingStatus.PICKED) {
       order.status = OrderStatus.PROCESSING;
-    } else if (
-      shippingStatus === ShippingStatus.IN_TRANSIT ||
-      shippingStatus === ShippingStatus.DELIVERED
-    ) {
+    } else if (shippingStatus === ShippingStatus.IN_TRANSIT) {
       order.status = OrderStatus.SHIPPED;
+    } else if (shippingStatus === ShippingStatus.CANCELED) {
+      order.status = OrderStatus.CANCELLED;
     }
 
     return this.ordersRepo.save(order as any);

@@ -866,37 +866,54 @@ export class OrdersService {
     if (order.status === OrderStatus.CANCELLED) {
       throw new BadRequestException('Đơn đã bị huỷ');
     }
-    if (order.shippingStatus !== ShippingStatus.DELIVERED) {
-      throw new BadRequestException('Chỉ xác nhận khi đơn đã giao thành công');
+
+    // user chỉ xác nhận khi shop đã chuyển sang đang giao
+    if (order.shippingStatus !== ShippingStatus.IN_TRANSIT) {
+      throw new BadRequestException('Chỉ xác nhận đã nhận hàng khi đơn đang giao');
     }
 
+    order.shippingStatus = ShippingStatus.DELIVERED;
     order.status = OrderStatus.COMPLETED;
+
     const saved = await this.orderRepo.save(order);
     await this.applyShopStatsOnCompleted(saved.id);
     return saved;
   }
 
   async requestReturn(userId: number, id: string) {
-    const order = await this.orderRepo.findOne({ where: { id, userId } });
-    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+  const order = await this.orderRepo.findOne({ where: { id, userId } });
+  if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
 
-    if (order.status === OrderStatus.CANCELLED) {
-      throw new BadRequestException('Đơn đã bị huỷ');
-    }
-
-    if (
-      order.shippingStatus !== ShippingStatus.DELIVERED &&
-      order.shippingStatus !== ShippingStatus.RETURNED &&
-      order.status !== OrderStatus.COMPLETED
-    ) {
-      throw new BadRequestException('Chỉ yêu cầu trả hàng sau khi đơn đã giao');
-    }
-
-    if (order.shippingStatus === ShippingStatus.RETURNED) {
-      return order;
-    }
-
-    order.shippingStatus = ShippingStatus.RETURNED;
-    return this.orderRepo.save(order);
+  if (order.status === OrderStatus.CANCELLED) {
+    throw new BadRequestException('Đơn đã bị huỷ');
   }
+
+  // chỉ hoàn hàng sau khi user đã xác nhận nhận hàng
+  if (!(order.status === OrderStatus.COMPLETED && order.shippingStatus === ShippingStatus.DELIVERED)) {
+    throw new BadRequestException('Chỉ hoàn hàng sau khi bạn đã nhận hàng');
+  }
+
+  order.shippingStatus = ShippingStatus.RETURNED;
+  return this.orderRepo.save(order);
+  }
+
+  async cancelMine(userId: number, id: string) {
+  const order = await this.orderRepo.findOne({ where: { id, userId } });
+  if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+
+  if (order.status === OrderStatus.CANCELLED) return order;
+  if (order.status === OrderStatus.COMPLETED) {
+    throw new BadRequestException('Đơn đã hoàn tất, không thể huỷ');
+  }
+
+  // user chỉ được huỷ khi shop CHƯA nhận đơn
+  if (order.shippingStatus !== ShippingStatus.PENDING) {
+    throw new BadRequestException('Shop đã nhận đơn, bạn không thể huỷ đơn nữa');
+  }
+
+  order.status = OrderStatus.CANCELLED;
+  order.shippingStatus = ShippingStatus.CANCELED;
+
+  return this.orderRepo.save(order);
+}
 }
