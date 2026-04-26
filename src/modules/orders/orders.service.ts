@@ -1,7 +1,13 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
-import { Order, OrderStatus, PaymentMethod, PaymentStatus, ShippingStatus } from './entities/order.entity';
+import {
+  Order,
+  OrderStatus,
+  PaymentMethod,
+  PaymentStatus,
+  ShippingStatus,
+} from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { PreviewOrderDto, CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
@@ -111,9 +117,9 @@ export class OrdersService {
         } as Partial<ShopStats>);
       }
 
-      stats.totalOrders = Number((stats as any).totalOrders ?? 0) + 1;
-      stats.totalSold = Number((stats as any).totalSold ?? 0) + Math.max(0, qty);
-      stats.totalRevenue = Number((stats as any).totalRevenue ?? 0) + Math.max(0, lines);
+      (stats as any).totalOrders = Number((stats as any).totalOrders ?? 0) + 1;
+      (stats as any).totalSold = Number((stats as any).totalSold ?? 0) + Math.max(0, qty);
+      (stats as any).totalRevenue = Number((stats as any).totalRevenue ?? 0) + Math.max(0, lines);
 
       await this.shopStatsRepo.save(stats);
     }
@@ -770,9 +776,9 @@ export class OrdersService {
 
   private canTransitionShippingStatus(from: ShippingStatus, to: ShippingStatus) {
     const map: Record<ShippingStatus, ShippingStatus[]> = {
-      [ShippingStatus.PENDING]: [ShippingStatus.PICKED, ShippingStatus.IN_TRANSIT, ShippingStatus.CANCELED],
+      [ShippingStatus.PENDING]: [ShippingStatus.PICKED, ShippingStatus.CANCELED],
       [ShippingStatus.PICKED]: [ShippingStatus.IN_TRANSIT, ShippingStatus.CANCELED],
-      [ShippingStatus.IN_TRANSIT]: [ShippingStatus.DELIVERED, ShippingStatus.CANCELED],
+      [ShippingStatus.IN_TRANSIT]: [ShippingStatus.DELIVERED],
       [ShippingStatus.DELIVERED]: [ShippingStatus.RETURNED],
       [ShippingStatus.RETURNED]: [],
       [ShippingStatus.CANCELED]: [],
@@ -819,30 +825,21 @@ export class OrdersService {
     }
 
     if (!patch.status) {
-      if (
-        [ShippingStatus.PICKED, ShippingStatus.IN_TRANSIT].includes(nextShippingStatus) &&
-        nextStatus === OrderStatus.PENDING
-      ) {
+      if (nextShippingStatus === ShippingStatus.PICKED) {
         nextStatus = OrderStatus.PROCESSING;
       }
 
-      if (
-        nextShippingStatus === ShippingStatus.DELIVERED &&
-        ![OrderStatus.COMPLETED, OrderStatus.CANCELLED].includes(nextStatus)
-      ) {
+      if (nextShippingStatus === ShippingStatus.IN_TRANSIT) {
         nextStatus = OrderStatus.SHIPPED;
       }
 
       if (nextShippingStatus === ShippingStatus.CANCELED) {
         nextStatus = OrderStatus.CANCELLED;
       }
-    }
 
-    if (
-      nextStatus === OrderStatus.COMPLETED &&
-      ![ShippingStatus.DELIVERED, ShippingStatus.RETURNED].includes(nextShippingStatus)
-    ) {
-      throw new BadRequestException('Chỉ được hoàn tất khi đơn đã giao');
+      if (nextShippingStatus === ShippingStatus.DELIVERED) {
+        nextStatus = OrderStatus.COMPLETED;
+      }
     }
 
     order.status = nextStatus;
@@ -858,6 +855,25 @@ export class OrdersService {
     return saved;
   }
 
+  async cancelMine(userId: number, id: string) {
+    const order = await this.orderRepo.findOne({ where: { id, userId } });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+
+    if (order.status === OrderStatus.CANCELLED) return order;
+    if (order.status === OrderStatus.COMPLETED) {
+      throw new BadRequestException('Đơn đã hoàn tất, không thể huỷ');
+    }
+
+    if (order.shippingStatus !== ShippingStatus.PENDING) {
+      throw new BadRequestException('Shop đã nhận đơn, bạn không thể huỷ đơn nữa');
+    }
+
+    order.status = OrderStatus.CANCELLED;
+    order.shippingStatus = ShippingStatus.CANCELED;
+
+    return this.orderRepo.save(order);
+  }
+
   async confirmReceived(userId: number, id: string) {
     const order = await this.orderRepo.findOne({ where: { id, userId } });
     if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
@@ -867,7 +883,6 @@ export class OrdersService {
       throw new BadRequestException('Đơn đã bị huỷ');
     }
 
-    // user chỉ xác nhận khi shop đã chuyển sang đang giao
     if (order.shippingStatus !== ShippingStatus.IN_TRANSIT) {
       throw new BadRequestException('Chỉ xác nhận đã nhận hàng khi đơn đang giao');
     }
@@ -881,39 +896,18 @@ export class OrdersService {
   }
 
   async requestReturn(userId: number, id: string) {
-  const order = await this.orderRepo.findOne({ where: { id, userId } });
-  if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+    const order = await this.orderRepo.findOne({ where: { id, userId } });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
 
-  if (order.status === OrderStatus.CANCELLED) {
-    throw new BadRequestException('Đơn đã bị huỷ');
+    if (order.status === OrderStatus.CANCELLED) {
+      throw new BadRequestException('Đơn đã bị huỷ');
+    }
+
+    if (!(order.status === OrderStatus.COMPLETED && order.shippingStatus === ShippingStatus.DELIVERED)) {
+      throw new BadRequestException('Chỉ hoàn hàng sau khi bạn đã nhận hàng');
+    }
+
+    order.shippingStatus = ShippingStatus.RETURNED;
+    return this.orderRepo.save(order);
   }
-
-  // chỉ hoàn hàng sau khi user đã xác nhận nhận hàng
-  if (!(order.status === OrderStatus.COMPLETED && order.shippingStatus === ShippingStatus.DELIVERED)) {
-    throw new BadRequestException('Chỉ hoàn hàng sau khi bạn đã nhận hàng');
-  }
-
-  order.shippingStatus = ShippingStatus.RETURNED;
-  return this.orderRepo.save(order);
-  }
-
-  async cancelMine(userId: number, id: string) {
-  const order = await this.orderRepo.findOne({ where: { id, userId } });
-  if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
-
-  if (order.status === OrderStatus.CANCELLED) return order;
-  if (order.status === OrderStatus.COMPLETED) {
-    throw new BadRequestException('Đơn đã hoàn tất, không thể huỷ');
-  }
-
-  // user chỉ được huỷ khi shop CHƯA nhận đơn
-  if (order.shippingStatus !== ShippingStatus.PENDING) {
-    throw new BadRequestException('Shop đã nhận đơn, bạn không thể huỷ đơn nữa');
-  }
-
-  order.status = OrderStatus.CANCELLED;
-  order.shippingStatus = ShippingStatus.CANCELED;
-
-  return this.orderRepo.save(order);
-}
 }
