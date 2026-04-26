@@ -1,17 +1,28 @@
-import { ArrayMaxSize, IsArray, IsInt, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  Min,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 
-export class CreateReviewDto {
+export class ReviewContentDto {
+  @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(5)
-  rating: number;
+  rating!: number;
 
-  // cũ
+  // FE cũ có thể gửi comment
   @IsOptional()
   @IsString()
   comment?: string;
 
-  // ✅ mới: FE có thể gửi content thay cho comment
+  // FE mới có thể gửi content
   @IsOptional()
   @IsString()
   content?: string;
@@ -23,8 +34,22 @@ export class CreateReviewDto {
   images?: string[];
 }
 
-// ✅ dùng cho POST /product-reviews { orderId, rating, content? }
-export class CreateReviewByOrderDto extends CreateReviewDto {
+// Dùng cho POST /orders/:id/review
+export class CreateReviewDto extends ReviewContentDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  productId?: number;
+}
+
+// Dùng cho POST /product-reviews
+export class CreateReviewByOrderDto extends ReviewContentDto {
   @IsUUID()
-  orderId: string;
+  orderId!: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  productId!: number;
 }
