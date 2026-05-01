@@ -6,13 +6,21 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, IsNull, Not, Repository } from 'typeorm';
+import {
+  DataSource,
+  DeepPartial,
+  EntityManager,
+  In,
+  IsNull,
+  Not,
+  Repository,
+} from 'typeorm';
 
 import { CreateProductDto } from './dto/create-product.dto';
 import { GenerateVariantsDto } from './dto/generate-variants.dto';
-import { UpdateVariantDto } from './dto/update-variant.dto';
-import { UpdateProductDto } from './dto/update-product.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
+import { UpdateProductDto } from './dto/update-product.dto';
+import { UpdateVariantDto } from './dto/update-variant.dto';
 
 import { Product, ProductStatus } from './entities/product.entity';
 import { ProductImage } from './entities/product-image.entity';
@@ -29,16 +37,22 @@ type Opt = { name: string; values: string[] };
 export class ProductsService {
   constructor(
     private readonly dataSource: DataSource,
-    @InjectRepository(Product) private readonly productsRepo: Repository<Product>,
-    @InjectRepository(ProductImage) private readonly imagesRepo: Repository<ProductImage>,
-    @InjectRepository(ProductVariant) private readonly variantsRepo: Repository<ProductVariant>,
-    @InjectRepository(Shop) private readonly shopsRepo: Repository<Shop>,
-    @InjectRepository(ShopStats) private readonly statsRepo: Repository<ShopStats>,
-    @InjectRepository(Category) private readonly categoriesRepo: Repository<Category>,
+    @InjectRepository(Product)
+    private readonly productsRepo: Repository<Product>,
+    @InjectRepository(ProductImage)
+    private readonly imagesRepo: Repository<ProductImage>,
+    @InjectRepository(ProductVariant)
+    private readonly variantsRepo: Repository<ProductVariant>,
+    @InjectRepository(Shop)
+    private readonly shopsRepo: Repository<Shop>,
+    @InjectRepository(ShopStats)
+    private readonly statsRepo: Repository<ShopStats>,
+    @InjectRepository(Category)
+    private readonly categoriesRepo: Repository<Category>,
   ) {}
 
-  private isUniqueViolation(e: any) {
-    return e?.code === 'ER_DUP_ENTRY' || /unique/i.test(e?.message ?? '');
+  private isUniqueViolation(error: any) {
+    return error?.code === 'ER_DUP_ENTRY' || /unique/i.test(error?.message ?? '');
   }
 
   private slugify(input: string): string {
@@ -49,6 +63,7 @@ export class ProductsService {
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
+
     return base || 'product';
   }
 
@@ -78,7 +93,7 @@ export class ProductsService {
       (acc, curr) =>
         acc
           .map((a) => curr.map((b) => [...a, b]))
-          .reduce((p, c) => [...p, ...c], []),
+          .reduce((prev, next) => [...prev, ...next], []),
       [[]],
     );
   }
@@ -108,26 +123,30 @@ export class ProductsService {
 
     const byKey = new Map<string, { displayName: string; values: string[] }>();
 
-    for (const o of cleaned) {
-      const key = this.normForMatch(o.name)!;
+    for (const option of cleaned) {
+      const key = this.normForMatch(option.name)!;
+
       if (!byKey.has(key)) {
-        byKey.set(key, { displayName: o.name, values: [] });
+        byKey.set(key, { displayName: option.name, values: [] });
       }
 
       const bucket = byKey.get(key)!;
       const seen = new Set(bucket.values.map((v) => this.normForMatch(v)!));
 
-      for (const v of o.values) {
-        const k = this.normForMatch(v)!;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        bucket.values.push(v);
+      for (const value of option.values) {
+        const valueKey = this.normForMatch(value)!;
+        if (seen.has(valueKey)) continue;
+        seen.add(valueKey);
+        bucket.values.push(value);
       }
     }
 
     return Array.from(byKey.values())
       .slice(0, 5)
-      .map((b) => ({ name: b.displayName, values: b.values }));
+      .map((item) => ({
+        name: item.displayName,
+        values: item.values,
+      }));
   }
 
   private mergeOptionSchema(oldSchema: Opt[], incoming: Opt[]): Opt[] {
@@ -136,52 +155,63 @@ export class ProductsService {
       { displayName: string; values: string[]; valueSet: Set<string> }
     >();
 
-    for (const o of oldSchema.slice(0, 5)) {
-      const k = this.normForMatch(o.name)!;
+    for (const option of oldSchema.slice(0, 5)) {
+      const key = this.normForMatch(option.name)!;
       const seen = new Set<string>();
       const values: string[] = [];
 
-      for (const v of o.values) {
-        const key = this.normForMatch(v);
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        values.push(v);
+      for (const value of option.values) {
+        const valueKey = this.normForMatch(value);
+        if (!valueKey || seen.has(valueKey)) continue;
+        seen.add(valueKey);
+        values.push(value);
       }
 
-      byKey.set(k, { displayName: o.name, values, valueSet: seen });
+      byKey.set(key, {
+        displayName: option.name,
+        values,
+        valueSet: seen,
+      });
     }
 
-    for (const o of incoming.slice(0, 5)) {
-      const key = this.normForMatch(o.name);
+    for (const option of incoming.slice(0, 5)) {
+      const key = this.normForMatch(option.name);
       if (!key) continue;
 
       if (!byKey.has(key)) {
         const seen = new Set<string>();
         const values: string[] = [];
 
-        for (const v of o.values) {
-          const k2 = this.normForMatch(v);
-          if (!k2 || seen.has(k2)) continue;
-          seen.add(k2);
-          values.push(v);
+        for (const value of option.values) {
+          const valueKey = this.normForMatch(value);
+          if (!valueKey || seen.has(valueKey)) continue;
+          seen.add(valueKey);
+          values.push(value);
         }
 
-        byKey.set(key, { displayName: o.name, values, valueSet: seen });
+        byKey.set(key, {
+          displayName: option.name,
+          values,
+          valueSet: seen,
+        });
         continue;
       }
 
       const bucket = byKey.get(key)!;
-      for (const v of o.values) {
-        const k2 = this.normForMatch(v);
-        if (!k2 || bucket.valueSet.has(k2)) continue;
-        bucket.valueSet.add(k2);
-        bucket.values.push(v);
+      for (const value of option.values) {
+        const valueKey = this.normForMatch(value);
+        if (!valueKey || bucket.valueSet.has(valueKey)) continue;
+        bucket.valueSet.add(valueKey);
+        bucket.values.push(value);
       }
     }
 
     return Array.from(byKey.values())
       .slice(0, 5)
-      .map((b) => ({ name: b.displayName, values: b.values }));
+      .map((item) => ({
+        name: item.displayName,
+        values: item.values,
+      }));
   }
 
   private async resolveCategoryId(input: any): Promise<number | null | undefined> {
@@ -193,49 +223,63 @@ export class ProductsService {
       throw new BadRequestException('categoryId không hợp lệ');
     }
 
-    const cat = await this.categoriesRepo.findOne({
+    const category = await this.categoriesRepo.findOne({
       where: { id, isActive: true, deletedAt: IsNull() } as any,
     });
 
-    if (!cat) {
+    if (!category) {
       throw new BadRequestException('categoryId không tồn tại hoặc đang bị tắt');
     }
 
-    return cat.id;
+    return category.id;
+  }
+
+  private async getMainImageMap(productIds: number[]) {
+    if (!productIds.length) return new Map<number, string>();
+
+    const mainImages = await this.imagesRepo.find({
+      where: { productId: In(productIds), isMain: true },
+    });
+
+    const map = new Map<number, string>();
+    for (const image of mainImages) {
+      if (!map.has(image.productId)) {
+        map.set(image.productId, image.url);
+      }
+    }
+
+    return map;
   }
 
   private async attachMainImage(items: Product[]) {
     if (!items.length) return [];
 
-    const ids = items.map((p) => p.id);
-    const mainImages = await this.imagesRepo.find({
-      where: { productId: In(ids), isMain: true },
-    });
+    const ids = items.map((item) => item.id);
+    const imageMap = await this.getMainImageMap(ids);
 
-    const map = new Map<number, string>();
-    for (const img of mainImages) {
-      if (!map.has(img.productId)) {
-        map.set(img.productId, img.url);
-      }
-    }
-
-    return items.map((p) => ({
-      ...p,
-      mainImageUrl: map.get(p.id) ?? null,
+    return items.map((item) => ({
+      ...item,
+      mainImageUrl: imageMap.get(item.id) ?? null,
     }));
   }
 
   private mapVariantRows(schema: Opt[], variants: ProductVariant[]) {
-    return variants.map((v) => ({
-      id: v.id,
-      sku: v.sku,
-      name: v.name,
-      price: v.price,
-      stock: v.stock,
-      imageId: v.imageId,
-      options: schema.map((opt, idx) => ({
-        option: opt.name,
-        value: [v.value1, v.value2, v.value3, v.value4, v.value5][idx] ?? null,
+    return variants.map((variant) => ({
+      id: variant.id,
+      sku: variant.sku,
+      name: variant.name,
+      price: variant.price,
+      stock: variant.stock,
+      imageId: variant.imageId,
+      options: schema.map((option, index) => ({
+        option: option.name,
+        value: [
+          variant.value1,
+          variant.value2,
+          variant.value3,
+          variant.value4,
+          variant.value5,
+        ][index] ?? null,
       })),
     }));
   }
@@ -246,39 +290,85 @@ export class ProductsService {
     actorRole: UserRole,
   ) {
     const product = await this.productsRepo.findOne({ where: { id: productId } });
-    if (!product) throw new NotFoundException('Không tìm thấy sản phẩm');
+    if (!product) {
+      throw new NotFoundException('Không tìm thấy sản phẩm');
+    }
 
-    if (actorRole === UserRole.ADMIN) return product;
+    if (actorRole === UserRole.ADMIN) {
+      return product;
+    }
 
-    const shop = await this.shopsRepo.findOne({ where: { id: product.shopId } });
-    const isOwner = shop?.userId === actorId;
-    if (!isOwner) throw new ForbiddenException('Bạn không có quyền');
+    const shop = await this.shopsRepo.findOne({
+      where: { id: product.shopId },
+    });
+
+    if (!shop || shop.userId !== actorId) {
+      throw new ForbiddenException('Bạn không có quyền');
+    }
 
     return product;
   }
 
   private async assertPublicProduct(productId: number) {
     const product = await this.productsRepo.findOne({
-      where: { id: productId, status: ProductStatus.ACTIVE },
+      where: {
+        id: productId,
+        status: ProductStatus.ACTIVE,
+      },
+      relations: {
+        shop: true,
+      },
     });
-    if (!product) throw new NotFoundException('Không tìm thấy sản phẩm');
 
-    const shop = await this.shopsRepo.findOne({ where: { id: product.shopId } });
-    if (!shop || shop.status !== ShopStatus.ACTIVE) {
+    if (!product || !product.shop || product.shop.status !== ShopStatus.ACTIVE) {
       throw new NotFoundException('Không tìm thấy sản phẩm');
     }
 
     return product;
   }
 
+  private async syncProductStockFromVariants(
+    productId: number,
+    manager?: EntityManager,
+  ): Promise<number> {
+    const variantsRepo = manager
+      ? manager.getRepository(ProductVariant)
+      : this.variantsRepo;
+
+    const productsRepo = manager
+      ? manager.getRepository(Product)
+      : this.productsRepo;
+
+    const variants = await variantsRepo.find({
+      where: { productId } as any,
+      order: { id: 'ASC' },
+    });
+
+    const totalStock = variants.reduce((sum, variant) => {
+      const stock = Number(variant.stock ?? 0);
+      return sum + (Number.isFinite(stock) && stock > 0 ? stock : 0);
+    }, 0);
+
+    await productsRepo.update({ id: productId } as any, {
+      stock: totalStock,
+    } as any);
+
+    return totalStock;
+  }
+
   async createBySeller(userId: number, dto: CreateProductDto) {
     const shop = await this.shopsRepo.findOne({ where: { userId } });
-    if (!shop) throw new ForbiddenException('Bạn chưa có shop.');
-    if (shop.status !== ShopStatus.ACTIVE) {
-      throw new ForbiddenException('Shop của bạn đang chờ ADMIN phê duyệt hoặc đang bị tạm khoá.');
+
+    if (!shop) {
+      throw new ForbiddenException('Bạn chưa có shop');
     }
 
-    const slug = await this.ensureUniqueSlug(dto.slug ?? dto.title);
+    if (shop.status !== ShopStatus.ACTIVE) {
+      throw new ForbiddenException('Shop của bạn chưa được duyệt hoặc đang bị khóa');
+    }
+
+    const title = dto.title.trim();
+    const slug = await this.ensureUniqueSlug(dto.slug ?? title);
     const categoryId = await this.resolveCategoryId((dto as any).categoryId);
 
     try {
@@ -290,27 +380,28 @@ export class ProductsService {
         const product = productRepo.create({
           shopId: shop.id,
           categoryId: categoryId ?? null,
-          title: dto.title.trim(),
+          title,
           slug,
           description: dto.description?.trim() || null,
-          price: Number((+dto.price).toFixed(2)),
-          stock: dto.stock ?? 0,
+          price: Number(Number(dto.price).toFixed(2)),
+          stock: 0,
           status: ProductStatus.ACTIVE,
-          optionSchema: null,
           publishedAt: new Date(),
+          optionSchema: null,
         });
 
         const saved = await productRepo.save(product);
 
         if (dto.images?.length) {
-          const images = dto.images.map((url, idx) =>
+          const images = dto.images.map((url, index) =>
             imageRepo.create({
               productId: saved.id,
               url,
-              position: idx,
-              isMain: idx === 0,
+              position: index,
+              isMain: index === 0,
             }),
           );
+
           await imageRepo.save(images);
         }
 
@@ -330,11 +421,11 @@ export class ProductsService {
 
         return saved;
       });
-    } catch (e) {
-      if (this.isUniqueViolation(e)) {
-        throw new ConflictException('Slug hoặc SKU đã tồn tại.');
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException('Slug sản phẩm đã tồn tại');
       }
-      throw e;
+      throw error;
     }
   }
 
@@ -363,7 +454,7 @@ export class ProductsService {
 
     const qb = this.productsRepo
       .createQueryBuilder('p')
-      .innerJoin(Shop, 'shop', 'shop.id = p.shopId')
+      .innerJoin('p.shop', 'shop')
       .where('p.status = :productStatus', { productStatus: ProductStatus.ACTIVE })
       .andWhere('shop.status = :shopStatus', { shopStatus: ShopStatus.ACTIVE });
 
@@ -396,9 +487,28 @@ export class ProductsService {
     const safePage = Math.max(1, Number(page || 1));
     const safeLimit = Math.min(100, Math.max(1, Number(limit || 20)));
 
+    const shop = await this.shopsRepo.findOne({
+      where: {
+        id: shopId,
+        status: ShopStatus.ACTIVE,
+      } as any,
+    });
+
+    if (!shop) {
+      return {
+        items: [],
+        page: safePage,
+        limit: safeLimit,
+        total: 0,
+      };
+    }
+
     const [items, total] = await this.productsRepo.findAndCount({
-      where: { shopId },
-      order: { createdAt: 'DESC' },
+      where: {
+        shopId,
+        status: ProductStatus.ACTIVE,
+      },
+      order: { createdAt: 'DESC', id: 'DESC' },
       skip: (safePage - 1) * safeLimit,
       take: safeLimit,
     });
@@ -419,30 +529,51 @@ export class ProductsService {
       order: { position: 'ASC', id: 'ASC' },
     });
 
-    return { ...product, images };
+    return {
+      ...product,
+      images,
+    };
+  }
+
+  async listPublicVariants(productId: number) {
+    const product = await this.assertPublicProduct(productId);
+
+    const schema: Opt[] = Array.isArray(product.optionSchema)
+      ? (product.optionSchema as Opt[])
+      : [];
+
+    const variants = await this.variantsRepo.find({
+      where: { productId } as any,
+      order: { id: 'ASC' },
+    });
+
+    return this.mapVariantRows(schema, variants);
   }
 
   async updateProduct(
     id: number,
     actorId: number,
     actorRole: UserRole,
-    patch: UpdateProductDto & { categoryId?: number | null },
+    patch: UpdateProductDto,
   ) {
     const product = await this.assertCanManageProduct(id, actorId, actorRole);
 
     if ((patch as any).categoryId !== undefined) {
-      const resolved = await this.resolveCategoryId((patch as any).categoryId);
-      product.categoryId = resolved === undefined ? product.categoryId : resolved;
+      const resolvedCategoryId = await this.resolveCategoryId((patch as any).categoryId);
+      product.categoryId =
+        resolvedCategoryId === undefined ? product.categoryId : resolvedCategoryId;
     }
 
-    if (patch.title !== undefined && patch.title.trim()) {
-      product.title = patch.title.trim();
+    if (patch.title !== undefined) {
+      const nextTitle = patch.title.trim();
+      product.title = nextTitle;
+
       if (!patch.slug) {
-        product.slug = await this.ensureUniqueSlug(product.title, product.id);
+        product.slug = await this.ensureUniqueSlug(nextTitle, product.id);
       }
     }
 
-    if (patch.slug !== undefined && patch.slug.trim()) {
+    if (patch.slug !== undefined) {
       product.slug = await this.ensureUniqueSlug(patch.slug.trim(), product.id);
     }
 
@@ -451,11 +582,7 @@ export class ProductsService {
     }
 
     if (patch.price !== undefined) {
-      product.price = Number((+patch.price).toFixed(2));
-    }
-
-    if (patch.stock !== undefined) {
-      product.stock = +patch.stock;
+      product.price = Number(Number(patch.price).toFixed(2));
     }
 
     if (patch.status !== undefined) {
@@ -472,9 +599,11 @@ export class ProductsService {
 
     try {
       return await this.productsRepo.save(product);
-    } catch (e: any) {
-      if (this.isUniqueViolation(e)) throw new ConflictException('Slug đã tồn tại');
-      throw e;
+    } catch (error: any) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException('Slug sản phẩm đã tồn tại');
+      }
+      throw error;
     }
   }
 
@@ -482,7 +611,9 @@ export class ProductsService {
     const product = await this.assertCanManageProduct(id, actorId, actorRole);
 
     const shop = await this.shopsRepo.findOne({ where: { id: product.shopId } });
-    if (!shop) throw new NotFoundException('Không tìm thấy shop');
+    if (!shop) {
+      throw new NotFoundException('Không tìm thấy shop của sản phẩm');
+    }
 
     await this.dataSource.transaction(async (trx) => {
       const productRepo = trx.getRepository(Product);
@@ -506,136 +637,136 @@ export class ProductsService {
     actorRole: UserRole,
     dto: GenerateVariantsDto,
   ) {
-    const product = await this.assertCanManageProduct(productId, actorId, actorRole);
+    await this.assertCanManageProduct(productId, actorId, actorRole);
 
     const incoming = this.normalizeOptions(dto.options ?? []);
     if (!incoming.length) {
       throw new BadRequestException('Danh sách option không hợp lệ');
     }
 
-    const defaultImage =
-      (await this.imagesRepo.findOne({
-        where: { productId, isMain: true },
-      })) ||
-      (await this.imagesRepo.findOne({
-        where: { productId },
-        order: { id: 'ASC' },
-      }));
-
-    const defaultImageId = defaultImage?.id ?? null;
     const mode = dto.mode ?? 'replace';
 
     try {
       return await this.dataSource.transaction(async (trx) => {
         const productRepo = trx.getRepository(Product);
         const variantRepo = trx.getRepository(ProductVariant);
+        const imageRepo = trx.getRepository(ProductImage);
 
-        const freshProduct = await productRepo.findOne({ where: { id: productId } });
-        if (!freshProduct) throw new NotFoundException('Không tìm thấy sản phẩm');
+        const product = await productRepo.findOne({ where: { id: productId } });
+        if (!product) {
+          throw new NotFoundException('Không tìm thấy sản phẩm');
+        }
 
-        const currentSchema: Opt[] = Array.isArray(freshProduct.optionSchema)
-          ? (freshProduct.optionSchema as Opt[])
+        const currentSchema: Opt[] = Array.isArray(product.optionSchema)
+          ? (product.optionSchema as Opt[])
           : [];
 
         const mergedSchema =
-          mode === 'replace'
-            ? incoming
-            : this.mergeOptionSchema(currentSchema, incoming);
+          mode === 'add'
+            ? this.mergeOptionSchema(currentSchema, incoming)
+            : incoming;
 
-        freshProduct.optionSchema = mergedSchema;
-        await productRepo.save(freshProduct);
-
-        if (mode === 'replace') {
-          await variantRepo.delete({ product: { id: productId } as any });
+        const combos = this.cartesian(mergedSchema.map((item) => item.values));
+        if (combos.length > 5000) {
+          throw new BadRequestException('Quá nhiều biến thể, tối đa 5000 tổ hợp');
         }
 
-        const existing = await variantRepo.find({
-          where: { product: { id: productId } },
-          order: { id: 'ASC' },
+        product.optionSchema = mergedSchema;
+        await productRepo.save(product);
+
+        let defaultImage = await imageRepo.findOne({
+          where: { productId, isMain: true },
         });
 
+        if (!defaultImage) {
+          defaultImage = await imageRepo.findOne({
+            where: { productId },
+            order: { id: 'ASC' },
+          });
+        }
+
+        const defaultImageId = defaultImage?.id ?? null;
+
+        let existingVariants: ProductVariant[] = [];
+
+        if (mode === 'replace') {
+          await variantRepo.delete({ productId } as any);
+        } else {
+          existingVariants = await variantRepo.find({
+            where: { productId } as any,
+            order: { id: 'ASC' },
+          });
+        }
+
         const existingKeys = new Set(
-          existing.map((v) =>
-            this.buildCombKey([v.value1, v.value2, v.value3, v.value4, v.value5]),
+          existingVariants.map((variant) =>
+            this.buildCombKey([
+              variant.value1,
+              variant.value2,
+              variant.value3,
+              variant.value4,
+              variant.value5,
+            ]),
           ),
         );
 
-        const combos = this.cartesian(mergedSchema.map((o) => o.values));
         const filteredCombos =
           mode === 'add'
-            ? combos.filter((c) => !existingKeys.has(this.buildCombKey(c)))
+            ? combos.filter((combo) => !existingKeys.has(this.buildCombKey(combo)))
             : combos;
 
-        if (filteredCombos.length > 5000) {
-          throw new BadRequestException('Quá nhiều biến thể (tối đa 5000).');
+        if (!filteredCombos.length) {
+          await this.syncProductStockFromVariants(productId, trx);
+
+          return await variantRepo.find({
+            where: { productId } as any,
+            order: { id: 'ASC' },
+          });
         }
 
-        let skuCounter = existing.reduce((max, v) => {
-          const match = v.sku?.match(new RegExp(`^P${productId}-(\\d+)$`));
+        let skuCounter = existingVariants.reduce((max, variant) => {
+          const match = variant.sku?.match(new RegExp(`^P${productId}-(\\d+)$`));
           const seq = match ? Number(match[1]) : 0;
           return Math.max(max, seq);
         }, 0);
 
-        const newVariants = filteredCombos.map((combo) => {
+        const newVariants: DeepPartial<ProductVariant>[] = filteredCombos.map((combo) => {
           skuCounter += 1;
 
-          const [v1, v2, v3, v4, v5] = combo;
-          const name = combo.join(' / ');
+          const [value1, value2, value3, value4, value5] = combo;
 
-          return variantRepo.create({
-            product: freshProduct,
+          return {
+            productId,
             sku: `P${productId}-${String(skuCounter).padStart(4, '0')}`,
-            name,
+            name: combo.join(' / '),
             price:
-              freshProduct.price !== null && freshProduct.price !== undefined
-                ? String(freshProduct.price)
+              product.price !== null && product.price !== undefined
+                ? String(product.price)
                 : null,
             stock: 0,
             imageId: defaultImageId,
-            value1: v1 ?? null,
-            value2: v2 ?? null,
-            value3: v3 ?? null,
-            value4: v4 ?? null,
-            value5: v5 ?? null,
-          });
+            value1: value1 ?? null,
+            value2: value2 ?? null,
+            value3: value3 ?? null,
+            value4: value4 ?? null,
+            value5: value5 ?? null,
+          };
         });
 
-        if (newVariants.length) {
-          await variantRepo.save(newVariants);
-        }
+        await variantRepo.save(newVariants);
+        await this.syncProductStockFromVariants(productId, trx);
 
-        const all = await variantRepo.find({
-          where: { product: { id: productId } },
+        return await variantRepo.find({
+          where: { productId } as any,
           order: { id: 'ASC' },
         });
-
-        const schema: Opt[] = Array.isArray(freshProduct.optionSchema)
-          ? (freshProduct.optionSchema as Opt[])
-          : [];
-
-        return this.mapVariantRows(schema, all as ProductVariant[]);
       });
-    } catch (e) {
-      if (this.isUniqueViolation(e)) {
-        throw new ConflictException('SKU hoặc tổ hợp biến thể đã tồn tại.');
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException('SKU hoặc tổ hợp biến thể đã tồn tại');
       }
-      throw e;
+      throw error;
     }
-  }
-
-  async listPublicVariants(productId: number) {
-    const product = await this.assertPublicProduct(productId);
-
-    const schema: Opt[] = Array.isArray(product.optionSchema)
-      ? (product.optionSchema as Opt[])
-      : [];
-
-    const variants = await this.variantsRepo.find({
-      where: { product: { id: productId } },
-      order: { id: 'ASC' },
-    });
-
-    return this.mapVariantRows(schema, variants as ProductVariant[]);
   }
 
   async listVariants(productId: number, actorId: number, actorRole: UserRole) {
@@ -646,11 +777,11 @@ export class ProductsService {
       : [];
 
     const variants = await this.variantsRepo.find({
-      where: { product: { id: productId } },
+      where: { productId } as any,
       order: { id: 'ASC' },
     });
 
-    return this.mapVariantRows(schema, variants as ProductVariant[]);
+    return this.mapVariantRows(schema, variants);
   }
 
   async updateVariant(
@@ -663,25 +794,42 @@ export class ProductsService {
     await this.assertCanManageProduct(productId, actorId, actorRole);
 
     const variant = await this.variantsRepo.findOne({
-      where: { id: variantId, product: { id: productId } },
+      where: { id: variantId, productId } as any,
     });
-    if (!variant) throw new NotFoundException('Không tìm thấy biến thể');
 
-    if (dto.name !== undefined) variant.name = dto.name.trim();
-    if (dto.sku !== undefined) variant.sku = dto.sku.trim();
-    if (dto.price !== undefined) variant.price = (+dto.price as any).toFixed(2);
-    if (dto.stock !== undefined) variant.stock = +dto.stock;
+    if (!variant) {
+      throw new NotFoundException('Không tìm thấy biến thể');
+    }
+
+    if (dto.name !== undefined) {
+      variant.name = dto.name.trim();
+    }
+
+    if (dto.sku !== undefined) {
+      variant.sku = dto.sku.trim().toUpperCase();
+    }
+
+    if (dto.price !== undefined) {
+      variant.price = Number(dto.price).toFixed(2);
+    }
+
+    if (dto.stock !== undefined) {
+      variant.stock = Number(dto.stock);
+    }
 
     if (dto.imageId !== undefined) {
       if (dto.imageId === null) {
         variant.imageId = null;
       } else {
-        const img = await this.imagesRepo.findOne({
+        const image = await this.imagesRepo.findOne({
           where: { id: dto.imageId },
         });
 
-        if (!img) throw new NotFoundException('Không tìm thấy ảnh');
-        if (img.productId !== productId) {
+        if (!image) {
+          throw new NotFoundException('Không tìm thấy ảnh');
+        }
+
+        if (image.productId !== productId) {
           throw new BadRequestException('Ảnh không thuộc sản phẩm này');
         }
 
@@ -690,12 +838,14 @@ export class ProductsService {
     }
 
     try {
-      return await this.variantsRepo.save(variant);
-    } catch (e: any) {
-      if (this.isUniqueViolation(e)) {
+      const saved = await this.variantsRepo.save(variant);
+      await this.syncProductStockFromVariants(productId);
+      return saved;
+    } catch (error: any) {
+      if (this.isUniqueViolation(error)) {
         throw new ConflictException('SKU hoặc tổ hợp biến thể đã tồn tại');
       }
-      throw e;
+      throw error;
     }
   }
 }

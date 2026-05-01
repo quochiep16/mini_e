@@ -4,22 +4,24 @@ import {
   IsNumber,
   IsOptional,
   IsString,
-  Length,
   Matches,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ProductStatus } from '../entities/product.entity';
 
 export class UpdateProductDto {
   @IsOptional()
   @IsString({ message: 'title phải là chuỗi' })
-  @Length(1, 180, { message: 'title tối đa 180 ký tự' })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @MaxLength(180, { message: 'title tối đa 180 ký tự' })
   title?: string;
 
   @IsOptional()
   @IsString({ message: 'slug phải là chuỗi' })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
     message: 'slug không hợp lệ (chỉ a-z, 0-9, dấu -)',
   })
@@ -28,6 +30,7 @@ export class UpdateProductDto {
 
   @IsOptional()
   @IsString({ message: 'description phải là chuỗi' })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @MaxLength(2000, { message: 'description tối đa 2000 ký tự' })
   description?: string;
 
@@ -38,17 +41,17 @@ export class UpdateProductDto {
   price?: number;
 
   @IsOptional()
-  @Type(() => Number)
-  @IsInt({ message: 'stock phải là số nguyên' })
-  @Min(0, { message: 'stock phải ≥ 0' })
-  stock?: number;
-
-  @IsOptional()
   @IsEnum(ProductStatus, { message: 'status không hợp lệ' })
   status?: ProductStatus;
 
   @IsOptional()
-  @Type(() => Number)
+  @Transform(({ value }) => {
+    if (value === '' || value === '0' || value === 0 || value === null || value === undefined) {
+      return null;
+    }
+    return Number(value);
+  })
+  @ValidateIf((_, value) => value !== null && value !== undefined)
   @IsInt({ message: 'categoryId phải là số nguyên' })
   @Min(1, { message: 'categoryId phải ≥ 1' })
   categoryId?: number | null;
