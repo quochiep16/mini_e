@@ -141,6 +141,62 @@ export class OrdersService {
     }
   }
 
+  private async revertShopStatsOnReturned(orderId: string) {
+    const rows = await this.dataSource
+      .createQueryBuilder()
+      .select('p.shop_id', 'shopId')
+      .addSelect('SUM(oi.quantity)', 'qty')
+      .addSelect('SUM(oi.total_line)', 'lines')
+      .from('order_items', 'oi')
+      .innerJoin('products', 'p', 'p.id = oi.product_id')
+      .where('oi.order_id = :orderId', { orderId })
+      .groupBy('p.shop_id')
+      .getRawMany<{ shopId: string; qty: string; lines: string }>();
+
+    for (const r of rows) {
+      const shopId = Number(r.shopId);
+      if (!shopId) continue;
+
+      const qty = Number(r.qty || 0);
+      const lines = Number(r.lines || 0);
+
+      const stats = await this.shopStatsRepo.findOne({ where: { shopId } as any });
+      if (!stats) continue;
+
+      (stats as any).totalOrders = Math.max(
+        0,
+        Number((stats as any).totalOrders ?? 0) - 1,
+      );
+      (stats as any).totalSold = Math.max(
+        0,
+        Number((stats as any).totalSold ?? 0) - Math.max(0, qty),
+      );
+      (stats as any).totalRevenue = Math.max(
+        0,
+        Number((stats as any).totalRevenue ?? 0) - Math.max(0, lines),
+      );
+
+      await this.shopStatsRepo.save(stats);
+    }
+
+    const prodRows = await this.dataSource
+      .createQueryBuilder()
+      .select('oi.product_id', 'productId')
+      .addSelect('SUM(oi.quantity)', 'qty')
+      .from('order_items', 'oi')
+      .where('oi.order_id = :orderId', { orderId })
+      .groupBy('oi.product_id')
+      .getRawMany<{ productId: string; qty: string }>();
+
+    for (const pr of prodRows) {
+      const pid = Number(pr.productId);
+      const q = Number(pr.qty || 0);
+      if (!pid || q <= 0) continue;
+
+      await this.productRepo.decrement({ id: pid } as any, 'sold', q);
+    }
+  }
+
   private genOrderCode() {
     const n = Math.floor(Math.random() * 10000)
       .toString()
@@ -795,6 +851,7 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
 
     const oldStatus = order.status;
+    const oldShippingStatus = order.shippingStatus;
 
     let nextStatus = order.status;
     let nextPaymentStatus = order.paymentStatus;
@@ -850,6 +907,13 @@ export class OrdersService {
 
     if (oldStatus !== OrderStatus.COMPLETED && saved.status === OrderStatus.COMPLETED) {
       await this.applyShopStatsOnCompleted(saved.id);
+    }
+
+    if (
+      oldShippingStatus !== ShippingStatus.RETURNED &&
+      saved.shippingStatus === ShippingStatus.RETURNED
+    ) {
+      await this.revertShopStatsOnReturned(saved.id);
     }
 
     return saved;
@@ -908,6 +972,10 @@ export class OrdersService {
     }
 
     order.shippingStatus = ShippingStatus.RETURNED;
-    return this.orderRepo.save(order);
+    const saved = await this.orderRepo.save(order);
+
+    await this.revertShopStatsOnReturned(saved.id);
+
+    return saved;
   }
 }
