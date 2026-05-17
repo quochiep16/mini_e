@@ -5,15 +5,33 @@ export class InitCategories1700000006000 implements MigrationInterface {
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     const has = await queryRunner.hasTable('categories');
+
     if (!has) {
       await queryRunner.createTable(
         new Table({
           name: 'categories',
           columns: [
-            { name: 'id', type: 'int', unsigned: true, isPrimary: true, isGenerated: true, generationStrategy: 'increment' },
+            {
+              name: 'id',
+              type: 'int',
+              unsigned: true,
+              isPrimary: true,
+              isGenerated: true,
+              generationStrategy: 'increment',
+            },
             { name: 'name', type: 'varchar', length: '120', isNullable: false },
             { name: 'slug', type: 'varchar', length: '160', isNullable: false },
             { name: 'description', type: 'text', isNullable: true },
+
+            // Ảnh dùng cho danh mục ở trang home / menu category
+            { name: 'image_url', type: 'varchar', length: '500', isNullable: true },
+
+            // icon nhỏ, nếu sau này bạn muốn hiển thị menu ngang như Shopee
+            { name: 'icon_url', type: 'varchar', length: '500', isNullable: true },
+
+            // banner lớn cho trang danh mục, có thể chưa dùng ngay
+            { name: 'banner_url', type: 'varchar', length: '500', isNullable: true },
+
             { name: 'parent_id', type: 'int', unsigned: true, isNullable: true },
             { name: 'is_active', type: 'tinyint', default: '1' },
             { name: 'sort_order', type: 'int', default: '0' },
@@ -29,10 +47,12 @@ export class InitCategories1700000006000 implements MigrationInterface {
         'categories',
         new TableIndex({ name: 'UQ_categories_slug', columnNames: ['slug'], isUnique: true }),
       );
+
       await queryRunner.createIndex(
         'categories',
         new TableIndex({ name: 'IDX_categories_parent', columnNames: ['parent_id'] }),
       );
+
       await queryRunner.createIndex(
         'categories',
         new TableIndex({ name: 'IDX_categories_active', columnNames: ['is_active'] }),
@@ -51,6 +71,7 @@ export class InitCategories1700000006000 implements MigrationInterface {
     }
 
     const productsTable = await queryRunner.getTable('products');
+
     if (productsTable && !productsTable.findColumnByName('category_id')) {
       await queryRunner.addColumn(
         'products',
@@ -59,7 +80,20 @@ export class InitCategories1700000006000 implements MigrationInterface {
     }
 
     const freshProductsTable = await queryRunner.getTable('products');
-    const fkExists = freshProductsTable?.foreignKeys?.some((fk) => fk.columnNames.includes('category_id'));
+
+    const categoryIndexExists = freshProductsTable?.indices?.some((idx) =>
+      idx.columnNames.includes('category_id'),
+    );
+
+    if (freshProductsTable && !categoryIndexExists) {
+      await queryRunner.createIndex(
+        'products',
+        new TableIndex({ name: 'IDX_products_category', columnNames: ['category_id'] }),
+      );
+    }
+
+    const fkExists = freshProductsTable?.foreignKeys?.some((fk) => fk.name === 'FK_products_category');
+
     if (freshProductsTable && !fkExists) {
       await queryRunner.createForeignKey(
         'products',
@@ -69,6 +103,7 @@ export class InitCategories1700000006000 implements MigrationInterface {
           referencedTableName: 'categories',
           referencedColumnNames: ['id'],
           onDelete: 'SET NULL',
+          onUpdate: 'CASCADE',
         }),
       );
     }
@@ -76,12 +111,16 @@ export class InitCategories1700000006000 implements MigrationInterface {
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     const productsTable = await queryRunner.getTable('products');
-    const fk = productsTable?.foreignKeys?.find((x) => x.name === 'FK_products_category');
-    if (fk) await queryRunner.dropForeignKey('products', fk);
+
+    const productCategoryFk = productsTable?.foreignKeys?.find((x) => x.name === 'FK_products_category');
+    if (productCategoryFk) await queryRunner.dropForeignKey('products', productCategoryFk);
+
+    const productCategoryIndex = productsTable?.indices?.find((x) => x.name === 'IDX_products_category');
+    if (productCategoryIndex) await queryRunner.dropIndex('products', productCategoryIndex);
 
     const categoriesTable = await queryRunner.getTable('categories');
-    const fkParent = categoriesTable?.foreignKeys?.find((x) => x.name === 'FK_categories_parent');
-    if (fkParent) await queryRunner.dropForeignKey('categories', fkParent);
+    const parentFk = categoriesTable?.foreignKeys?.find((x) => x.name === 'FK_categories_parent');
+    if (parentFk) await queryRunner.dropForeignKey('categories', parentFk);
 
     if (await queryRunner.hasTable('categories')) {
       await queryRunner.dropTable('categories');
