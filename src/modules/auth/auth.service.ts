@@ -11,6 +11,7 @@ import { DeepPartial, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { randomInt } from 'crypto';
 
 import { User } from '../users/entities/user.entity';
 import { UserRole } from '../users/enums/user.enum';
@@ -31,6 +32,7 @@ type VerifyInfo = {
   expiresAt: Date;
   sent: boolean;
   cooldownRemaining?: number;
+  devOtp?: string;
 };
 
 type AuthUserPayload = {
@@ -85,6 +87,23 @@ export class AuthService {
     return Number(this.config.get('OTP_RESEND_COOLDOWN_SECONDS') ?? 60);
   }
 
+  private getRequiredConfig(key: string): string {
+  const value = this.config.get<string>(key);
+
+    if (!value) {
+      throw new InternalServerErrorException(`Thiếu biến môi trường ${key}`);
+    }
+
+    return value;
+  }
+
+  private shouldShowOtpInResponse(): boolean {
+    const nodeEnv = this.config.get<string>('NODE_ENV', 'development');
+    const showOtp = this.config.get<string>('SHOW_OTP_IN_RESPONSE', 'false');
+
+    return nodeEnv !== 'production' && showOtp === 'true';
+  }
+
   private async hashPassword(raw: string) {
     const rounds = Number(this.config.get('BCRYPT_SALT_ROUNDS') ?? 12);
     const toHash = this.pepper ? raw + this.pepper : raw;
@@ -97,9 +116,8 @@ export class AuthService {
   }
 
   private generateOtp(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    return randomInt(100000, 1000000).toString();
   }
-
   private normalizeEmail(email?: string | null) {
     const v = (email ?? '').trim();
     return v ? v.toLowerCase() : null;
@@ -156,12 +174,13 @@ export class AuthService {
   }
 
   private async generateTokens(user: User) {
-    const atSecret = this.config.get<string>('ACCESS_TOKEN_SECRET', 'change_me');
+    const atSecret = this.getRequiredConfig('ACCESS_TOKEN_SECRET');
     const atExpires = this.config.get<string>('ACCESS_TOKEN_EXPIRES', '15m');
-    const rtSecret = this.config.get<string>('REFRESH_TOKEN_SECRET', 'change_me_too');
+
+    const rtSecret = this.getRequiredConfig('REFRESH_TOKEN_SECRET');
     const rtExpires = this.config.get<string>('REFRESH_TOKEN_EXPIRES', '7d');
 
-    const payload = {
+    const accessPayload = {
       sub: user.id,
       email: user.email,
       phone: user.phone,
@@ -169,20 +188,29 @@ export class AuthService {
       isVerified: user.isVerified,
     };
 
+    const refreshPayload = {
+      sub: user.id,
+      isVerified: user.isVerified,
+    };
+
     const [access_token, refresh_token] = await Promise.all([
-      this.jwt.signAsync(payload, { secret: atSecret, expiresIn: atExpires }),
-      this.jwt.signAsync(
-        { sub: user.id, isVerified: user.isVerified },
-        { secret: rtSecret, expiresIn: rtExpires },
-      ),
+      this.jwt.signAsync(accessPayload, {
+        secret: atSecret,
+        expiresIn: atExpires,
+      }),
+      this.jwt.signAsync(refreshPayload, {
+        secret: rtSecret,
+        expiresIn: rtExpires,
+      }),
     ]);
 
     return { access_token, refresh_token };
   }
 
   private async generateAccessToken(user: User) {
-    const atSecret = this.config.get<string>('ACCESS_TOKEN_SECRET', 'change_me');
+    const atSecret = this.getRequiredConfig('ACCESS_TOKEN_SECRET');
     const atExpires = this.config.get<string>('ACCESS_TOKEN_EXPIRES', '15m');
+
     const payload = {
       sub: user.id,
       email: user.email,
@@ -190,7 +218,11 @@ export class AuthService {
       role: user.role,
       isVerified: user.isVerified,
     };
-    return this.jwt.signAsync(payload, { secret: atSecret, expiresIn: atExpires });
+
+    return this.jwt.signAsync(payload, {
+      secret: atSecret,
+      expiresIn: atExpires,
+    });
   }
 
   private async validateUser(identifierRaw: string, password: string) {
@@ -226,10 +258,13 @@ export class AuthService {
     if (via === 'email' && !user.email && user.phone) via = 'phone';
     if (via === 'phone' && !user.phone && user.email) via = 'email';
 
-    if (via === 'email' && !user.email)
+    if (via === 'email' && !user.email) {
       throw new BadRequestException('Tài khoản không có email để gửi OTP');
-    if (via === 'phone' && !user.phone)
+    }
+
+    if (via === 'phone' && !user.phone) {
       throw new BadRequestException('Tài khoản không có SĐT để gửi OTP');
+    }
 
     if (user.timeOtp) {
       const now = Date.now();
@@ -238,6 +273,7 @@ export class AuthService {
 
       if (deltaSec < this.otpResendCooldownSec) {
         const remain = Math.ceil(this.otpResendCooldownSec - deltaSec);
+
         return {
           required: true,
           via,
@@ -260,6 +296,8 @@ export class AuthService {
     user.timeOtp = expiresAt as any;
     await this.usersRepo.save(user);
 
+    let sent = true;
+
     try {
       if (via === 'email') {
         const email = this.requireEmail(user);
@@ -267,11 +305,21 @@ export class AuthService {
       } else {
         const phoneRaw = this.requirePhone(user);
         const phone = this.normalizePhone(phoneRaw);
-        if (!phone) throw new Error('Invalid phone');
+
+        if (!phone) {
+          throw new Error('Invalid phone');
+        }
+
         await this.smsSvc.sendOtp(phone, otp);
       }
     } catch (e: any) {
-      throw new InternalServerErrorException(`Gửi OTP thất bại: ${e?.message ?? 'Unknown error'}`);
+      if (via === 'email') {
+        throw new InternalServerErrorException(
+          `Gửi OTP email thất bại: ${e?.message ?? 'Unknown error'}`,
+        );
+      }
+
+      sent = false;
     }
 
     return {
@@ -282,7 +330,8 @@ export class AuthService {
           ? this.maskEmail(this.requireEmail(user))
           : this.maskPhone(this.requirePhone(user)),
       expiresAt,
-      sent: true,
+      sent,
+      ...(this.shouldShowOtpInResponse() ? { devOtp: otp } : {}),
     };
   }
 
@@ -406,7 +455,7 @@ export class AuthService {
   async refresh(refreshToken: string) {
     if (!refreshToken) throw new UnauthorizedException('Thiếu refresh token');
 
-    const secret = this.config.get<string>('REFRESH_TOKEN_SECRET', 'change_me_too');
+    const secret = this.getRequiredConfig('REFRESH_TOKEN_SECRET');
     let decoded: any;
     try {
       decoded = await this.jwt.verifyAsync(refreshToken, { secret });
@@ -463,6 +512,7 @@ export class AuthService {
       sent: true,
       email: this.maskEmail(this.requireEmail(user)),
       expiresAt: user.timeOtp,
+      ...(this.shouldShowOtpInResponse() ? { devOtp: otp } : {}),
     };
   }
 
@@ -535,15 +585,35 @@ export class AuthService {
       { otp: otpHash as any, timeOtp: expiresAt as any },
     );
 
-    if (byEmail) {
-      await this.emailSvc.sendActivationCode(this.requireEmail(user), otp);
-    } else {
-      const phone = this.normalizePhone(this.requirePhone(user));
-      if (!phone) throw new BadRequestException('SĐT không hợp lệ');
-      await this.smsSvc.sendOtp(phone, otp);
+    let sent = true;
+
+    try {
+      if (byEmail) {
+        await this.emailSvc.sendActivationCode(this.requireEmail(user), otp);
+      } else {
+        const phone = this.normalizePhone(this.requirePhone(user));
+
+        if (!phone) {
+          throw new BadRequestException('SĐT không hợp lệ');
+        }
+
+        await this.smsSvc.sendOtp(phone, otp);
+      }
+    } catch (e: any) {
+      if (byEmail) {
+        throw new InternalServerErrorException(
+          `Gửi OTP email thất bại: ${e?.message ?? 'Unknown error'}`,
+        );
+      }
+
+      sent = false;
     }
 
-    return { sent: true, expiresAt };
+    return {
+      sent,
+      expiresAt,
+      ...(this.shouldShowOtpInResponse() ? { devOtp: otp } : {}),
+    };
   }
 
   async confirmAccountRecover(dto: AccountRecoverConfirmDto) {

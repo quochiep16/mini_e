@@ -1,4 +1,3 @@
-// src/modules/auth/strategies/jwt-access.service.ts
 import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
@@ -7,14 +6,23 @@ import { ConfigService } from '@nestjs/config';
 @Injectable()
 export class JwtAccessStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor(config: ConfigService) {
+    const secret = config.get<string>('ACCESS_TOKEN_SECRET');
+
+    if (!secret) {
+      throw new Error('Thiếu ACCESS_TOKEN_SECRET trong .env');
+    }
+
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-      secretOrKey: config.get<string>('ACCESS_TOKEN_SECRET', 'change_me'),
+      secretOrKey: secret,
       ignoreExpiration: false,
     });
   }
-  // payload chính là cái bạn ký ở login: { sub, email, role }
+
   async validate(payload: any) {
-    return payload; // => gắn vào req.user
+    return {
+      ...payload,
+      id: payload.sub,
+    };
   }
 }
