@@ -441,13 +441,24 @@ export class UsersService {
     const now = new Date();
     const randomPassword = `deactivated_${id}_${now.getTime()}_${Math.random()}`;
 
-    user.name = 'Người dùng đã xóa';
+    /**
+     * Khi vô hiệu hóa user:
+     * - Giữ nguyên name
+     * - Giữ nguyên avatarUrl
+     * - Đổi email để không thể đăng nhập bằng email cũ
+     * - Đổi phone để không thể đăng nhập bằng số điện thoại cũ
+     * - Đổi passwordHash để mật khẩu cũ không còn dùng được
+     * - Xóa OTP
+     * - Set deletedAt để guard chặn gọi API
+     */
     user.email = this.makeDeactivatedEmail(id, now);
     user.phone = this.makeDeactivatedPhone(id, now);
     user.passwordHash = await this.hashPassword(randomPassword);
-    user.avatarUrl = null as any;
-    user.birthday = null as any;
-    user.gender = null as any;
+
+    // Giữ nguyên:
+    // user.name
+    // user.avatarUrl
+
     user.otp = null as any;
     user.timeOtp = null as any;
     user.lastLoginAt = null as any;
