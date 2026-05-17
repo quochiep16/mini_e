@@ -17,6 +17,7 @@ import type { Response } from 'express';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateMeDto } from './dto/update-me.dto';
 import { QueryUserDto } from './dto/query-user.dto';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { AppRole } from '../../common/constants/roles';
@@ -27,9 +28,8 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Get('me')
-  async me(@CurrentUser('sub') sub: number, @Res() res: Response) {
-    const userId = Number(sub);
-    const result = await this.usersService.findById(userId);
+  async me(@CurrentUser('id') userId: number, @Res() res: Response) {
+    const result = await this.usersService.findById(Number(userId));
 
     return res.status(HttpStatus.OK).json({
       success: true,
@@ -40,18 +40,11 @@ export class UsersController {
 
   @Patch('me')
   async updateMe(
-    @CurrentUser('sub') sub: number,
-    @Body() dto: UpdateUserDto,
+    @CurrentUser('id') userId: number,
+    @Body() dto: UpdateMeDto,
     @Res() res: Response,
   ) {
-    const userId = Number(sub);
-
-    delete (dto as any).role;
-    delete (dto as any).isVerified;
-    delete (dto as any).isSystem;
-    delete (dto as any).systemCode;
-
-    const result = await this.usersService.update(userId, dto);
+    const result = await this.usersService.updateMe(Number(userId), dto);
 
     return res.status(HttpStatus.OK).json({
       success: true,
@@ -61,14 +54,17 @@ export class UsersController {
   }
 
   @Delete('me')
-  async deleteMe(@CurrentUser('sub') sub: number, @Res() res: Response) {
-    const userId = Number(sub);
-    await this.usersService.softDelete(userId);
+  async deactivateMe(@CurrentUser('id') userId: number, @Res() res: Response) {
+    await this.usersService.deactivate(Number(userId));
 
     return res.status(HttpStatus.OK).json({
       success: true,
       statusCode: HttpStatus.OK,
-      data: { id: userId, deleted: true },
+      data: {
+        id: Number(userId),
+        deactivated: true,
+        message: 'Tài khoản đã được vô hiệu hóa',
+      },
     });
   }
 
@@ -97,9 +93,9 @@ export class UsersController {
   }
 
   @Roles(AppRole.ADMIN)
-  @Get('deleted/all')
-  async findAllDeleted(@Query() q: QueryUserDto, @Res() res: Response) {
-    const result = await this.usersService.findAllDeleted(q);
+  @Get('deactivated/all')
+  async findAllDeactivated(@Query() q: QueryUserDto, @Res() res: Response) {
+    const result = await this.usersService.findAllDeactivated(q);
 
     return res.status(HttpStatus.OK).json({
       success: true,
@@ -138,37 +134,17 @@ export class UsersController {
 
   @Roles(AppRole.ADMIN)
   @Delete(':id')
-  async remove(@Param('id', ParseIntPipe) id: number, @Res() res: Response) {
-    await this.usersService.softDelete(id);
+  async deactivate(@Param('id', ParseIntPipe) id: number, @Res() res: Response) {
+    await this.usersService.deactivate(id);
 
     return res.status(HttpStatus.OK).json({
       success: true,
       statusCode: HttpStatus.OK,
-      data: { id, deleted: true },
-    });
-  }
-
-  @Roles(AppRole.ADMIN)
-  @Delete(':id/hard')
-  async hardRemove(@Param('id', ParseIntPipe) id: number, @Res() res: Response) {
-    await this.usersService.hardDelete(id);
-
-    return res.status(HttpStatus.OK).json({
-      success: true,
-      statusCode: HttpStatus.OK,
-      data: { id, deleted: true },
-    });
-  }
-
-  @Roles(AppRole.ADMIN)
-  @Post(':id/restore')
-  async restore(@Param('id', ParseIntPipe) id: number, @Res() res: Response) {
-    await this.usersService.restore(id);
-
-    return res.status(HttpStatus.OK).json({
-      success: true,
-      statusCode: HttpStatus.OK,
-      data: { id, restored: true },
+      data: {
+        id,
+        deactivated: true,
+        message: 'Tài khoản đã được vô hiệu hóa',
+      },
     });
   }
 }

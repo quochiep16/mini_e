@@ -9,12 +9,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DeepPartial, Not, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
-import { Cron, CronExpression } from '@nestjs/schedule';
 
 import { User } from './entities/user.entity';
-import { UserRole } from '../users/enums/user.enum';
+import { UserRole } from './enums/user.enum';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateMeDto } from './dto/update-me.dto';
 import { QueryUserDto } from './dto/query-user.dto';
 
 @Injectable()
@@ -40,12 +40,12 @@ export class UsersService {
     );
   }
 
-  private normalizeEmail(email?: string) {
+  private normalizeEmail(email?: string | null) {
     const v = (email ?? '').trim();
     return v ? v.toLowerCase() : undefined;
   }
 
-  private normalizePhone(phone?: string) {
+  private normalizePhone(phone?: string | null) {
     const raw = (phone ?? '').trim();
     if (!raw) return undefined;
 
@@ -59,8 +59,16 @@ export class UsersService {
     throw new BadRequestException('Số điện thoại không hợp lệ');
   }
 
+  private async hashPassword(password: string) {
+    const rounds = Number(this.config.get('BCRYPT_SALT_ROUNDS') ?? 12);
+    const pepper = this.config.get<string>('BCRYPT_PEPPER');
+    const toHash = pepper ? password + pepper : password;
+    return bcrypt.hash(toHash, rounds);
+  }
+
   private sanitizeUser<T extends Partial<User>>(user: T | null | undefined) {
     if (!user) return user;
+
     const {
       passwordHash,
       otp,
@@ -68,6 +76,7 @@ export class UsersService {
       systemCode,
       ...safe
     } = user as any;
+
     return safe;
   }
 
@@ -79,9 +88,26 @@ export class UsersService {
     );
   }
 
+  private makeDeactivatedEmail(id: number, now: Date) {
+    // Cố tình không có @ để không qua IsEmail ở login nếu người dùng nhập lại.
+    return `deleted_user_${id}_${now.getTime()}`;
+  }
+
+  private makeDeactivatedPhone(id: number, now: Date) {
+    // Có chữ D nên không qua regex phone: /^\+?[0-9]{8,15}$/.
+    // Giữ tối đa 20 ký tự để phù hợp cột phone varchar(20).
+    return `D${id}${String(now.getTime()).slice(-9)}`.slice(0, 20);
+  }
+
   private async findActiveEntityById(id: number): Promise<User> {
-    const user = await this.repo.findOne({ where: { id } });
-    if (!user) throw new NotFoundException('User không tồn tại');
+    const user = await this.repo.findOne({
+      where: { id },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User không tồn tại');
+    }
+
     return user;
   }
 
@@ -121,9 +147,9 @@ export class UsersService {
     if (email) {
       const exists = await this.repo.findOne({
         where: { email } as any,
-        withDeleted: true,
       });
-      if (exists && !exists.deletedAt) {
+
+      if (exists) {
         throw new ConflictException('Email đã tồn tại');
       }
     }
@@ -131,17 +157,14 @@ export class UsersService {
     if (phone) {
       const existsPhone = await this.repo.findOne({
         where: { phone } as any,
-        withDeleted: true,
       });
-      if (existsPhone && !existsPhone.deletedAt) {
+
+      if (existsPhone) {
         throw new ConflictException('Số điện thoại đã tồn tại');
       }
     }
 
-    const rounds = Number(this.config.get('BCRYPT_SALT_ROUNDS') ?? 12);
-    const pepper = this.config.get<string>('BCRYPT_PEPPER');
-    const toHash = pepper ? dto.password + pepper : dto.password;
-    const passwordHash = await bcrypt.hash(toHash, rounds);
+    const passwordHash = await this.hashPassword(dto.password);
 
     const data: DeepPartial<User> = {
       name: dto.name.trim(),
@@ -165,14 +188,18 @@ export class UsersService {
     } catch (e: any) {
       if (this.isUniqueViolation(e)) {
         const msg = String(e?.message ?? '');
+
         if (/phone/i.test(msg)) {
           throw new ConflictException('Số điện thoại đã tồn tại');
         }
+
         if (/system_code/i.test(msg)) {
           throw new ConflictException('systemCode đã tồn tại');
         }
+
         throw new ConflictException('Email đã tồn tại');
       }
+
       throw e;
     }
   }
@@ -185,6 +212,7 @@ export class UsersService {
   async findAll(q: QueryUserDto) {
     const page = Math.max(Number(q.page ?? 1), 1);
     const limit = Math.min(Math.max(Number(q.limit ?? 20), 1), 100);
+
     const qb = this.repo.createQueryBuilder('u');
 
     if (q.search) {
@@ -210,6 +238,7 @@ export class UsersService {
       'updatedAt',
       'lastLoginAt',
     ]);
+
     const safeSortBy = allowSort.has(sortBy) ? sortBy : 'createdAt';
 
     qb.orderBy(`u.${safeSortBy}`, sortOrder)
@@ -229,156 +258,7 @@ export class UsersService {
     };
   }
 
-  async update(id: number, dto: UpdateUserDto) {
-    await this.assertNotRootAdminTarget(id);
-
-    const user = await this.findActiveEntityById(id);
-
-    let nextEmail = user.email;
-    let nextPhone = user.phone;
-
-    if ((dto as any).email !== undefined) {
-      nextEmail = this.normalizeEmail((dto as any).email);
-    }
-
-    if ((dto as any).phone !== undefined) {
-      nextPhone = this.normalizePhone((dto as any).phone);
-    }
-
-    if (!nextEmail && !nextPhone) {
-      throw new BadRequestException('User phải có ít nhất email hoặc số điện thoại');
-    }
-
-    if (nextEmail && nextEmail !== user.email) {
-      const existed = await this.repo.findOne({
-        where: {
-          email: nextEmail,
-          id: Not(id),
-        } as any,
-        withDeleted: true,
-      });
-
-      if (existed && !existed.deletedAt) {
-        throw new ConflictException('Email đã tồn tại');
-      }
-    }
-
-    if (nextPhone && nextPhone !== user.phone) {
-      const existed = await this.repo.findOne({
-        where: {
-          phone: nextPhone,
-          id: Not(id),
-        } as any,
-        withDeleted: true,
-      });
-
-      if (existed && !existed.deletedAt) {
-        throw new ConflictException('Số điện thoại đã tồn tại');
-      }
-    }
-
-    if (dto.password) {
-      const rounds = Number(this.config.get('BCRYPT_SALT_ROUNDS') ?? 12);
-      const pepper = this.config.get<string>('BCRYPT_PEPPER');
-      const toHash = pepper ? dto.password + pepper : dto.password;
-      user.passwordHash = await bcrypt.hash(toHash, rounds);
-    }
-
-    if (dto.name !== undefined) user.name = dto.name.trim();
-    if ((dto as any).email !== undefined) user.email = nextEmail;
-    if ((dto as any).phone !== undefined) user.phone = nextPhone;
-    if (dto.avatarUrl !== undefined) user.avatarUrl = dto.avatarUrl?.trim() || undefined;
-    if (dto.birthday !== undefined) user.birthday = dto.birthday ?? undefined;
-    if (dto.gender !== undefined) user.gender = dto.gender ?? undefined;
-    if (dto.isVerified !== undefined) user.isVerified = dto.isVerified;
-    if (dto.role !== undefined) user.role = dto.role;
-
-    try {
-      await this.repo.save(user);
-      return this.findById(id);
-    } catch (e: any) {
-      if (this.isUniqueViolation(e)) {
-        const msg = String(e?.message ?? '');
-        if (/phone/i.test(msg)) {
-          throw new ConflictException('Số điện thoại đã tồn tại');
-        }
-        throw new ConflictException('Email đã tồn tại');
-      }
-      throw e;
-    }
-  }
-
-  async softDelete(id: number): Promise<void> {
-    await this.assertNotRootAdminTarget(id);
-
-    const existed = await this.repo.findOne({
-      where: { id },
-      withDeleted: true,
-    });
-
-    if (!existed) {
-      throw new NotFoundException('User không tồn tại');
-    }
-
-    if (existed.deletedAt) {
-      throw new NotFoundException('User không tồn tại');
-    }
-
-    const res = await this.repo.softDelete(id);
-    if (!res.affected) {
-      throw new NotFoundException('User không tồn tại');
-    }
-  }
-
-  async restore(id: number): Promise<void> {
-    await this.assertNotRootAdminTarget(id);
-
-    const existed = await this.repo.findOne({
-      where: { id },
-      withDeleted: true,
-    });
-
-    if (!existed) {
-      throw new NotFoundException('User không tồn tại');
-    }
-
-    if (!existed.deletedAt) return;
-
-    const res = await this.repo.restore(id);
-    if (!res.affected) {
-      throw new NotFoundException('User không tồn tại');
-    }
-  }
-
-  async hardDelete(id: number): Promise<void> {
-    await this.assertNotRootAdminTarget(id);
-
-    const existed = await this.repo.findOne({
-      where: { id },
-      withDeleted: true,
-    });
-
-    if (!existed) {
-      throw new NotFoundException('User không tồn tại');
-    }
-
-    if (!existed.deletedAt) {
-      throw new BadRequestException('Chỉ được xóa cứng user đã xóa mềm trước đó');
-    }
-
-    try {
-      const res = await this.repo.delete(id);
-      if (!res.affected) {
-        throw new NotFoundException('User không tồn tại');
-      }
-    } catch {
-      throw new BadRequestException(
-        'Không thể xóa cứng user vì còn dữ liệu liên quan',
-      );
-    }
-  }
-
-  async findAllDeleted(q: QueryUserDto) {
+  async findAllDeactivated(q: QueryUserDto) {
     const page = Math.max(Number(q.page ?? 1), 1);
     const limit = Math.min(Math.max(Number(q.limit ?? 20), 1), 100);
 
@@ -399,14 +279,19 @@ export class UsersService {
     const sortOrder: 'ASC' | 'DESC' = rawSortOrder === 'ASC' ? 'ASC' : 'DESC';
 
     const allowSort = new Set([
-      'deletedAt',
-      'createdAt',
-      'updatedAt',
       'id',
       'name',
       'email',
       'phone',
+      'role',
+      'isVerified',
+      'isSystem',
+      'createdAt',
+      'updatedAt',
+      'lastLoginAt',
+      'deletedAt',
     ]);
+
     const safeSortBy = allowSort.has(sortBy) ? sortBy : 'deletedAt';
 
     qb.orderBy(`u.${safeSortBy}`, sortOrder)
@@ -426,30 +311,157 @@ export class UsersService {
     };
   }
 
-  private graceDays() {
-    return Number(this.config.get('ACCOUNT_DELETE_GRACE_DAYS') ?? 30);
+  async updateMe(id: number, dto: UpdateMeDto) {
+    await this.assertNotRootAdminTarget(id);
+
+    const user = await this.findActiveEntityById(id);
+
+    return this.applyUpdate(user, dto, false);
   }
 
-  @Cron(CronExpression.EVERY_DAY_AT_3AM)
-  async hardDeleteExpired() {
-    const days = this.graceDays();
-    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  async update(id: number, dto: UpdateUserDto) {
+    await this.assertNotRootAdminTarget(id);
 
-    const expiredUsers = await this.repo
-      .createQueryBuilder('u')
-      .withDeleted()
-      .where('u.deletedAt IS NOT NULL')
-      .andWhere('u.deletedAt < :cutoff', { cutoff })
-      .getMany();
+    const user = await this.findActiveEntityById(id);
 
-    for (const user of expiredUsers) {
-      if (this.isRootAdmin(user)) continue;
+    return this.applyUpdate(user, dto, true);
+  }
 
-      try {
-        await this.repo.delete(user.id);
-      } catch {
-        //
+  private async applyUpdate(
+    user: User,
+    dto: UpdateUserDto | UpdateMeDto,
+    allowAdminFields: boolean,
+  ) {
+    let nextEmail = user.email;
+    let nextPhone = user.phone;
+
+    if ((dto as any).email !== undefined) {
+      nextEmail = this.normalizeEmail((dto as any).email);
+    }
+
+    if ((dto as any).phone !== undefined) {
+      nextPhone = this.normalizePhone((dto as any).phone);
+    }
+
+    if (!nextEmail && !nextPhone) {
+      throw new BadRequestException('User phải có ít nhất email hoặc số điện thoại');
+    }
+
+    if (nextEmail && nextEmail !== user.email) {
+      const existed = await this.repo.findOne({
+        where: {
+          email: nextEmail,
+          id: Not(user.id),
+        } as any,
+      });
+
+      if (existed) {
+        throw new ConflictException('Email đã tồn tại');
       }
+    }
+
+    if (nextPhone && nextPhone !== user.phone) {
+      const existed = await this.repo.findOne({
+        where: {
+          phone: nextPhone,
+          id: Not(user.id),
+        } as any,
+      });
+
+      if (existed) {
+        throw new ConflictException('Số điện thoại đã tồn tại');
+      }
+    }
+
+    const password = (dto as UpdateUserDto).password;
+
+    if (allowAdminFields && password) {
+      user.passwordHash = await this.hashPassword(password);
+    }
+
+    if (dto.name !== undefined) {
+      user.name = dto.name.trim();
+    }
+
+    if ((dto as any).email !== undefined) {
+      user.email = nextEmail;
+    }
+
+    if ((dto as any).phone !== undefined) {
+      user.phone = nextPhone;
+    }
+
+    if (dto.avatarUrl !== undefined) {
+      user.avatarUrl = dto.avatarUrl?.trim() ? dto.avatarUrl.trim() : (null as any);
+    }
+
+    if (dto.birthday !== undefined) {
+      user.birthday = dto.birthday ?? (null as any);
+    }
+
+    if (dto.gender !== undefined) {
+      user.gender = dto.gender ?? (null as any);
+    }
+
+    if (allowAdminFields) {
+      const adminDto = dto as UpdateUserDto;
+
+      if (adminDto.isVerified !== undefined) {
+        user.isVerified = adminDto.isVerified;
+      }
+
+      if (adminDto.role !== undefined) {
+        user.role = adminDto.role;
+      }
+    }
+
+    try {
+      await this.repo.save(user);
+      return this.findById(user.id);
+    } catch (e: any) {
+      if (this.isUniqueViolation(e)) {
+        const msg = String(e?.message ?? '');
+
+        if (/phone/i.test(msg)) {
+          throw new ConflictException('Số điện thoại đã tồn tại');
+        }
+
+        throw new ConflictException('Email đã tồn tại');
+      }
+
+      throw e;
+    }
+  }
+
+  async deactivate(id: number): Promise<void> {
+    await this.assertNotRootAdminTarget(id);
+
+    const user = await this.findActiveEntityById(id);
+
+    const now = new Date();
+    const randomPassword = `deactivated_${id}_${now.getTime()}_${Math.random()}`;
+
+    user.name = 'Người dùng đã xóa';
+    user.email = this.makeDeactivatedEmail(id, now);
+    user.phone = this.makeDeactivatedPhone(id, now);
+    user.passwordHash = await this.hashPassword(randomPassword);
+    user.avatarUrl = null as any;
+    user.birthday = null as any;
+    user.gender = null as any;
+    user.otp = null as any;
+    user.timeOtp = null as any;
+    user.lastLoginAt = null as any;
+    user.isVerified = false;
+    user.deletedAt = now;
+
+    try {
+      await this.repo.save(user);
+    } catch (e: any) {
+      if (this.isUniqueViolation(e)) {
+        throw new ConflictException('Không thể vô hiệu hóa user do trùng dữ liệu');
+      }
+
+      throw e;
     }
   }
 }
