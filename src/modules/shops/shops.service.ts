@@ -584,8 +584,9 @@ export class ShopsService {
       }
 
       const oldOwnerId = currentShop.userId;
+      const now = new Date();
 
-      // Chuyển chủ shop cũ về USER.
+      // 1. Chuyển role chủ shop cũ về USER
       if (oldOwnerId) {
         const owner = await userRepo.findOne({
           where: { id: oldOwnerId },
@@ -597,13 +598,25 @@ export class ShopsService {
         }
       }
 
-      // Xóa mềm shop:
-      // - Không xóa dòng shop khỏi database.
-      // - Không xóa sản phẩm, thống kê, đơn hàng.
-      // - Chỉ bỏ liên kết user để user cũ có thể đăng ký shop mới.
+      // 2. Xóa mềm toàn bộ sản phẩm thuộc shop
+      // Không xóa cứng khỏi database.
+      // Chỉ cập nhật products.deleted_at = now.
+      await trx.query(
+        `
+        UPDATE products
+        SET deleted_at = ?
+        WHERE shop_id = ?
+          AND deleted_at IS NULL
+        `,
+        [now, currentShop.id],
+      );
+
+      // 3. Xóa mềm shop
+      // Không xóa shop khỏi database.
+      // Bỏ liên kết user để user cũ có thể đăng ký shop mới.
       currentShop.userId = null;
       currentShop.user = null;
-      currentShop.deletedAt = new Date();
+      currentShop.deletedAt = now;
 
       await shopRepo.save(currentShop);
     });
