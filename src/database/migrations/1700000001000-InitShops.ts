@@ -7,7 +7,7 @@ export class InitShops1700000001000 implements MigrationInterface {
     await queryRunner.query(`
       CREATE TABLE \`shops\` (
         \`id\` INT UNSIGNED NOT NULL AUTO_INCREMENT,
-        \`user_id\` INT UNSIGNED NOT NULL,
+        \`user_id\` INT UNSIGNED NULL,
         \`name\` VARCHAR(150) NOT NULL,
         \`slug\` VARCHAR(180) NOT NULL,
         \`description\` VARCHAR(255) NULL,
@@ -21,7 +21,7 @@ export class InitShops1700000001000 implements MigrationInterface {
         \`updated_at\` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
         \`deleted_at\` DATETIME(6) NULL,
         CONSTRAINT \`PK_shops_id\` PRIMARY KEY (\`id\`),
-        CONSTRAINT \`FK_shops_user\` FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON DELETE CASCADE ON UPDATE CASCADE
+        CONSTRAINT \`FK_shops_user\` FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON DELETE SET NULL ON UPDATE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
