@@ -36,19 +36,32 @@ export class UpdateProductDto {
 
   @IsOptional()
   @Type(() => Number)
-  @IsNumber({ maxDecimalPlaces: 2 }, { message: 'price phải là số, tối đa 2 chữ số thập phân' })
+  @IsNumber(
+    { maxDecimalPlaces: 2 },
+    { message: 'price phải là số, tối đa 2 chữ số thập phân' },
+  )
   @Min(0, { message: 'price phải ≥ 0' })
   price?: number;
 
+  // ACTIVE: đang bán
+  // OUT_OF_STOCK: hết hàng
+  // LOCKED: đã khóa
   @IsOptional()
   @IsEnum(ProductStatus, { message: 'status không hợp lệ' })
   status?: ProductStatus;
 
   @IsOptional()
   @Transform(({ value }) => {
-    if (value === '' || value === '0' || value === 0 || value === null || value === undefined) {
+    if (
+      value === '' ||
+      value === '0' ||
+      value === 0 ||
+      value === null ||
+      value === undefined
+    ) {
       return null;
     }
+
     return Number(value);
   })
   @ValidateIf((_, value) => value !== null && value !== undefined)

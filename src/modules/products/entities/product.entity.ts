@@ -1,7 +1,14 @@
 import {
-  Entity, PrimaryGeneratedColumn, Column, Index,
-  ManyToOne, OneToMany, JoinColumn,
-  CreateDateColumn, UpdateDateColumn, DeleteDateColumn,
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  Index,
+  ManyToOne,
+  OneToMany,
+  JoinColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
+  DeleteDateColumn,
 } from 'typeorm';
 import { Shop } from '../../shops/entities/shop.entity';
 import { ProductImage } from './product-image.entity';
@@ -9,9 +16,14 @@ import { ProductVariant } from './product-variant.entity';
 import { Category } from '../../categories/entities/category.entity';
 
 export enum ProductStatus {
-  DRAFT = 'DRAFT',
+  // Đang bán
   ACTIVE = 'ACTIVE',
-  ARCHIVED = 'ARCHIVED',
+
+  // Hết hàng
+  OUT_OF_STOCK = 'OUT_OF_STOCK',
+
+  // Đã khóa bởi admin vì vi phạm
+  LOCKED = 'LOCKED',
 }
 
 @Entity({ name: 'products' })
@@ -33,7 +45,10 @@ export class Product {
   @Column({ name: 'category_id', type: 'int', unsigned: true, nullable: true })
   categoryId?: number | null;
 
-  @ManyToOne(() => Category, (c) => c.products, { nullable: true, onDelete: 'SET NULL' })
+  @ManyToOne(() => Category, (c) => c.products, {
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
   @JoinColumn({ name: 'category_id' })
   category?: Category | null;
 
@@ -55,7 +70,13 @@ export class Product {
   @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
   price: number;
 
-  @Column({ name: 'compare_at_price', type: 'decimal', precision: 12, scale: 2, nullable: true })
+  @Column({
+    name: 'compare_at_price',
+    type: 'decimal',
+    precision: 12,
+    scale: 2,
+    nullable: true,
+  })
   compareAtPrice?: string | null;
 
   @Column({ type: 'char', length: 3, default: 'VND' })
@@ -67,7 +88,15 @@ export class Product {
   @Column({ type: 'int', default: 0 })
   sold: number;
 
-  @Column({ type: 'enum', enum: ProductStatus, default: ProductStatus.DRAFT })
+  // Dùng varchar để khớp với migration hiện tại.
+  // ACTIVE = đang bán
+  // OUT_OF_STOCK = hết hàng
+  // LOCKED = đã khóa
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: ProductStatus.ACTIVE,
+  })
   status: ProductStatus;
 
   @Column({ name: 'published_at', type: 'datetime', nullable: true })
@@ -79,6 +108,8 @@ export class Product {
   @UpdateDateColumn({ name: 'updated_at', type: 'datetime' })
   updatedAt: Date;
 
+  // Xóa mềm sản phẩm.
+  // Khi xóa product sẽ chỉ gán deleted_at, không xóa cứng khỏi database.
   @DeleteDateColumn({ name: 'deleted_at', type: 'datetime', nullable: true })
   deletedAt?: Date | null;
 

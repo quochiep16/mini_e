@@ -49,8 +49,12 @@ const uploadOptions: MulterOptions = {
   }),
   fileFilter: (_req, file, cb) => {
     if (!/^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)) {
-      return cb(new BadRequestException('Chỉ chấp nhận ảnh (jpeg, png, webp, gif)'), false);
+      return cb(
+        new BadRequestException('Chỉ chấp nhận ảnh (jpeg, png, webp, gif)'),
+        false,
+      );
     }
+
     cb(null, true);
   },
   limits: { fileSize: 5 * 1024 * 1024, files: 10 },
@@ -60,6 +64,9 @@ const uploadOptions: MulterOptions = {
 export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
+  // Public: người mua xem danh sách sản phẩm.
+  // Chỉ lấy sản phẩm chưa bị xóa mềm, shop ACTIVE,
+  // product status ACTIVE hoặc OUT_OF_STOCK.
   @Public()
   @Get()
   async list(@Query() q: QueryProductsDto) {
@@ -67,6 +74,8 @@ export class ProductsController {
     return { success: true, data };
   }
 
+  // Public: người mua xem sản phẩm theo shop.
+  // Không trả sản phẩm LOCKED hoặc đã deleted_at.
   @Public()
   @Get('by-shop/:shopId')
   async listByShop(
@@ -74,7 +83,37 @@ export class ProductsController {
     @Query('page') page = '1',
     @Query('limit') limit = '20',
   ) {
-    const data = await this.productsService.findByShop(shopId, Number(page), Number(limit));
+    const data = await this.productsService.findByShop(
+      shopId,
+      Number(page),
+      Number(limit),
+    );
+
+    return { success: true, data };
+  }
+
+  // Seller: xem sản phẩm của shop mình.
+  // Seller thấy ACTIVE, OUT_OF_STOCK, LOCKED.
+  // Seller không thấy sản phẩm đã deleted_at.
+  @UseGuards(AccessTokenGuard)
+  @Get('my-shop')
+  async listMyShopProducts(
+    @CurrentUser('sub') userId: number,
+    @Query() query: QueryProductsDto,
+  ) {
+    const data = await this.productsService.findMyShopProducts(userId, query);
+    return { success: true, data };
+  }
+
+  // Admin: xem toàn bộ sản phẩm, bao gồm cả sản phẩm đã deleted_at.
+  // Admin chỉ được xem deleted_at, không được sửa product đã deleted_at.
+  @UseGuards(AccessTokenGuard)
+  @Get('admin/all')
+  async listForAdmin(
+    @CurrentUser('role') role: UserRole,
+    @Query() query: QueryProductsDto,
+  ) {
+    const data = await this.productsService.findAdminAll(role, query);
     return { success: true, data };
   }
 
@@ -155,7 +194,13 @@ export class ProductsController {
     @CurrentUser('role') role: UserRole,
     @Body() dto: GenerateVariantsDto,
   ) {
-    const data = await this.productsService.generateVariants(id, userId, role, dto);
+    const data = await this.productsService.generateVariants(
+      id,
+      userId,
+      role,
+      dto,
+    );
+
     return { success: true, data };
   }
 
@@ -175,6 +220,7 @@ export class ProductsController {
       role,
       dto,
     );
+
     return { success: true, data };
   }
 }

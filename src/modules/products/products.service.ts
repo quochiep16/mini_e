@@ -37,16 +37,22 @@ type Opt = { name: string; values: string[] };
 export class ProductsService {
   constructor(
     private readonly dataSource: DataSource,
+
     @InjectRepository(Product)
     private readonly productsRepo: Repository<Product>,
+
     @InjectRepository(ProductImage)
     private readonly imagesRepo: Repository<ProductImage>,
+
     @InjectRepository(ProductVariant)
     private readonly variantsRepo: Repository<ProductVariant>,
+
     @InjectRepository(Shop)
     private readonly shopsRepo: Repository<Shop>,
+
     @InjectRepository(ShopStats)
     private readonly statsRepo: Repository<ShopStats>,
+
     @InjectRepository(Category)
     private readonly categoriesRepo: Repository<Category>,
   ) {}
@@ -73,14 +79,20 @@ export class ProductsService {
     let suffix = 1;
 
     while (true) {
-      const exists = await this.productsRepo.exists({
-        where: {
-          slug: candidate,
-          ...(ignoreId ? { id: Not(ignoreId) } : {}),
-        },
-      });
+      const qb = this.productsRepo
+        .createQueryBuilder('p')
+        .withDeleted()
+        .where('p.slug = :candidate', { candidate });
 
-      if (!exists) return candidate;
+      if (ignoreId) {
+        qb.andWhere('p.id <> :ignoreId', { ignoreId });
+      }
+
+      const exists = await qb.getExists();
+
+      if (!exists) {
+        return candidate;
+      }
 
       suffix += 1;
       candidate = `${slugBase}-${suffix}`;
@@ -89,6 +101,7 @@ export class ProductsService {
 
   private cartesian<T>(lists: T[][]): T[][] {
     if (!lists.length) return [];
+
     return lists.reduce<T[][]>(
       (acc, curr) =>
         acc
@@ -100,6 +113,7 @@ export class ProductsService {
 
   private normForMatch(input: string | null | undefined): string | null {
     if (!input) return null;
+
     return input
       .trim()
       .toLowerCase()
@@ -115,9 +129,7 @@ export class ProductsService {
     const cleaned = (input ?? [])
       .map((o) => ({
         name: (o.name ?? '').trim(),
-        values: (o.values ?? [])
-          .map((v) => (v ?? '').trim())
-          .filter(Boolean),
+        values: (o.values ?? []).map((v) => (v ?? '').trim()).filter(Boolean),
       }))
       .filter((o) => o.name && o.values.length > 0);
 
@@ -135,7 +147,9 @@ export class ProductsService {
 
       for (const value of option.values) {
         const valueKey = this.normForMatch(value)!;
+
         if (seen.has(valueKey)) continue;
+
         seen.add(valueKey);
         bucket.values.push(value);
       }
@@ -162,7 +176,9 @@ export class ProductsService {
 
       for (const value of option.values) {
         const valueKey = this.normForMatch(value);
+
         if (!valueKey || seen.has(valueKey)) continue;
+
         seen.add(valueKey);
         values.push(value);
       }
@@ -176,6 +192,7 @@ export class ProductsService {
 
     for (const option of incoming.slice(0, 5)) {
       const key = this.normForMatch(option.name);
+
       if (!key) continue;
 
       if (!byKey.has(key)) {
@@ -184,7 +201,9 @@ export class ProductsService {
 
         for (const value of option.values) {
           const valueKey = this.normForMatch(value);
+
           if (!valueKey || seen.has(valueKey)) continue;
+
           seen.add(valueKey);
           values.push(value);
         }
@@ -194,13 +213,17 @@ export class ProductsService {
           values,
           valueSet: seen,
         });
+
         continue;
       }
 
       const bucket = byKey.get(key)!;
+
       for (const value of option.values) {
         const valueKey = this.normForMatch(value);
+
         if (!valueKey || bucket.valueSet.has(valueKey)) continue;
+
         bucket.valueSet.add(valueKey);
         bucket.values.push(value);
       }
@@ -219,6 +242,7 @@ export class ProductsService {
     if (input === null) return null;
 
     const id = Number(input);
+
     if (!Number.isInteger(id) || id <= 0) {
       throw new BadRequestException('categoryId không hợp lệ');
     }
@@ -242,6 +266,7 @@ export class ProductsService {
     });
 
     const map = new Map<number, string>();
+
     for (const image of mainImages) {
       if (!map.has(image.productId)) {
         map.set(image.productId, image.url);
@@ -273,13 +298,14 @@ export class ProductsService {
       imageId: variant.imageId,
       options: schema.map((option, index) => ({
         option: option.name,
-        value: [
-          variant.value1,
-          variant.value2,
-          variant.value3,
-          variant.value4,
-          variant.value5,
-        ][index] ?? null,
+        value:
+          [
+            variant.value1,
+            variant.value2,
+            variant.value3,
+            variant.value4,
+            variant.value5,
+          ][index] ?? null,
       })),
     }));
   }
@@ -289,7 +315,14 @@ export class ProductsService {
     actorId: number,
     actorRole: UserRole,
   ) {
-    const product = await this.productsRepo.findOne({ where: { id: productId } });
+    const product = await this.productsRepo.findOne({
+      where: { id: productId },
+      relations: {
+        shop: true,
+      },
+      withDeleted: true,
+    });
+
     if (!product) {
       throw new NotFoundException('Không tìm thấy sản phẩm');
     }
@@ -298,29 +331,55 @@ export class ProductsService {
       return product;
     }
 
-    const shop = await this.shopsRepo.findOne({
-      where: { id: product.shopId },
-    });
-
-    if (!shop || shop.userId !== actorId) {
+    if (!product.shop || product.shop.userId !== actorId) {
       throw new ForbiddenException('Bạn không có quyền');
     }
 
     return product;
   }
 
-  private async assertPublicProduct(productId: number) {
-    const product = await this.productsRepo.findOne({
-      where: {
-        id: productId,
-        status: ProductStatus.ACTIVE,
-      },
-      relations: {
-        shop: true,
-      },
-    });
+  private assertProductNotDeleted(product: Product) {
+    if (product.deletedAt) {
+      throw new BadRequestException('Sản phẩm đã bị xóa, không thể chỉnh sửa');
+    }
+  }
 
-    if (!product || !product.shop || product.shop.status !== ShopStatus.ACTIVE) {
+  private assertSellerCanEditProduct(product: Product, actorRole: UserRole) {
+    if (actorRole !== UserRole.ADMIN && product.status === ProductStatus.LOCKED) {
+      throw new ForbiddenException(
+        'Sản phẩm đã bị admin khóa, shop không thể chỉnh sửa sản phẩm này',
+      );
+    }
+  }
+
+  private assertCanChangeStatus(actorRole: UserRole, nextStatus: ProductStatus) {
+    if (actorRole === UserRole.ADMIN) {
+      if (nextStatus !== ProductStatus.LOCKED) {
+        throw new ForbiddenException('Admin chỉ được chuyển sản phẩm sang trạng thái đã khóa');
+      }
+
+      return;
+    }
+
+    if (![ProductStatus.ACTIVE, ProductStatus.OUT_OF_STOCK].includes(nextStatus)) {
+      throw new ForbiddenException(
+        'Shop chỉ được chuyển sản phẩm sang đang bán hoặc hết hàng',
+      );
+    }
+  }
+
+  private async assertPublicProduct(productId: number) {
+    const publicStatuses = [ProductStatus.ACTIVE, ProductStatus.OUT_OF_STOCK];
+
+    const product = await this.productsRepo
+      .createQueryBuilder('p')
+      .innerJoinAndSelect('p.shop', 'shop')
+      .where('p.id = :productId', { productId })
+      .andWhere('p.status IN (:...publicStatuses)', { publicStatuses })
+      .andWhere('shop.status = :shopStatus', { shopStatus: ShopStatus.ACTIVE })
+      .getOne();
+
+    if (!product) {
       throw new NotFoundException('Không tìm thấy sản phẩm');
     }
 
@@ -335,9 +394,7 @@ export class ProductsService {
       ? manager.getRepository(ProductVariant)
       : this.variantsRepo;
 
-    const productsRepo = manager
-      ? manager.getRepository(Product)
-      : this.productsRepo;
+    const productsRepo = manager ? manager.getRepository(Product) : this.productsRepo;
 
     const variants = await variantsRepo.find({
       where: { productId } as any,
@@ -349,9 +406,12 @@ export class ProductsService {
       return sum + (Number.isFinite(stock) && stock > 0 ? stock : 0);
     }, 0);
 
-    await productsRepo.update({ id: productId } as any, {
-      stock: totalStock,
-    } as any);
+    await productsRepo.update(
+      { id: productId } as any,
+      {
+        stock: totalStock,
+      } as any,
+    );
 
     return totalStock;
   }
@@ -385,7 +445,10 @@ export class ProductsService {
           description: dto.description?.trim() || null,
           price: Number(Number(dto.price).toFixed(2)),
           stock: 0,
+
+          // Sản phẩm mới mặc định là đang bán.
           status: ProductStatus.ACTIVE,
+
           publishedAt: new Date(),
           optionSchema: null,
         });
@@ -406,6 +469,7 @@ export class ProductsService {
         }
 
         let stats = await statsRepo.findOne({ where: { shopId: shop.id } });
+
         if (!stats) {
           stats = statsRepo.create({
             shopId: shop.id,
@@ -425,6 +489,7 @@ export class ProductsService {
       if (this.isUniqueViolation(error)) {
         throw new ConflictException('Slug sản phẩm đã tồn tại');
       }
+
       throw error;
     }
   }
@@ -452,18 +517,36 @@ export class ProductsService {
     const limit = Math.min(100, Math.max(1, Number(query.limit ?? 20)));
     const q = (query.q ?? '').trim();
 
+    const publicStatuses = [ProductStatus.ACTIVE, ProductStatus.OUT_OF_STOCK];
+
+    if (query.status && !publicStatuses.includes(query.status)) {
+      return {
+        items: [],
+        page,
+        limit,
+        total: 0,
+      };
+    }
+
     const qb = this.productsRepo
       .createQueryBuilder('p')
       .innerJoin('p.shop', 'shop')
-      .where('p.status = :productStatus', { productStatus: ProductStatus.ACTIVE })
-      .andWhere('shop.status = :shopStatus', { shopStatus: ShopStatus.ACTIVE });
+      .where('shop.status = :shopStatus', { shopStatus: ShopStatus.ACTIVE });
+
+    if (query.status) {
+      qb.andWhere('p.status = :status', { status: query.status });
+    } else {
+      qb.andWhere('p.status IN (:...publicStatuses)', { publicStatuses });
+    }
 
     if (query.shopId) {
       qb.andWhere('p.shopId = :shopId', { shopId: query.shopId });
     }
 
     if (query.categoryId) {
-      qb.andWhere('p.categoryId = :categoryId', { categoryId: query.categoryId });
+      qb.andWhere('p.categoryId = :categoryId', {
+        categoryId: query.categoryId,
+      });
     }
 
     if (q) {
@@ -506,8 +589,8 @@ export class ProductsService {
     const [items, total] = await this.productsRepo.findAndCount({
       where: {
         shopId,
-        status: ProductStatus.ACTIVE,
-      },
+        status: In([ProductStatus.ACTIVE, ProductStatus.OUT_OF_STOCK]),
+      } as any,
       order: { createdAt: 'DESC', id: 'DESC' },
       skip: (safePage - 1) * safeLimit,
       take: safeLimit,
@@ -517,6 +600,103 @@ export class ProductsService {
       items: await this.attachMainImage(items),
       page: safePage,
       limit: safeLimit,
+      total,
+    };
+  }
+
+  async findMyShopProducts(userId: number, query: QueryProductsDto) {
+    const page = Math.max(1, Number(query.page ?? 1));
+    const limit = Math.min(100, Math.max(1, Number(query.limit ?? 20)));
+    const q = (query.q ?? '').trim();
+
+    const shop = await this.shopsRepo.findOne({
+      where: { userId } as any,
+    });
+
+    if (!shop) {
+      throw new ForbiddenException('Bạn chưa có shop');
+    }
+
+    const qb = this.productsRepo
+      .createQueryBuilder('p')
+      .where('p.shopId = :shopId', { shopId: shop.id });
+
+    if (query.status) {
+      qb.andWhere('p.status = :status', { status: query.status });
+    } else {
+      qb.andWhere('p.status IN (:...statuses)', {
+        statuses: [
+          ProductStatus.ACTIVE,
+          ProductStatus.OUT_OF_STOCK,
+          ProductStatus.LOCKED,
+        ],
+      });
+    }
+
+    if (query.categoryId) {
+      qb.andWhere('p.categoryId = :categoryId', {
+        categoryId: query.categoryId,
+      });
+    }
+
+    if (q) {
+      qb.andWhere('(p.title LIKE :q OR p.slug LIKE :q)', { q: `%${q}%` });
+    }
+
+    qb.orderBy('p.createdAt', 'DESC').addOrderBy('p.id', 'DESC');
+    qb.skip((page - 1) * limit).take(limit);
+
+    const [items, total] = await qb.getManyAndCount();
+
+    return {
+      items: await this.attachMainImage(items),
+      page,
+      limit,
+      total,
+    };
+  }
+
+  async findAdminAll(actorRole: UserRole, query: QueryProductsDto) {
+    if (actorRole !== UserRole.ADMIN) {
+      throw new ForbiddenException('Chỉ admin mới được xem danh sách này');
+    }
+
+    const page = Math.max(1, Number(query.page ?? 1));
+    const limit = Math.min(100, Math.max(1, Number(query.limit ?? 20)));
+    const q = (query.q ?? '').trim();
+
+    const qb = this.productsRepo
+      .createQueryBuilder('p')
+      .withDeleted()
+      .leftJoinAndSelect('p.shop', 'shop');
+
+    if (query.status) {
+      qb.andWhere('p.status = :status', { status: query.status });
+    }
+
+    if (query.shopId) {
+      qb.andWhere('p.shopId = :shopId', { shopId: query.shopId });
+    }
+
+    if (query.categoryId) {
+      qb.andWhere('p.categoryId = :categoryId', {
+        categoryId: query.categoryId,
+      });
+    }
+
+    if (q) {
+      qb.andWhere('(p.title LIKE :q OR p.slug LIKE :q)', { q: `%${q}%` });
+    }
+
+    qb.orderBy('p.createdAt', 'DESC').addOrderBy('p.id', 'DESC');
+    qb.skip((page - 1) * limit).take(limit);
+
+    const [items, total] = await qb.getManyAndCount();
+
+    return {
+      items: await this.attachMainImage(items),
+      page,
+      limit,
       total,
     };
   }
@@ -558,8 +738,19 @@ export class ProductsService {
   ) {
     const product = await this.assertCanManageProduct(id, actorId, actorRole);
 
+    // Không cho sửa sản phẩm đã bị soft delete.
+    this.assertProductNotDeleted(product);
+
+    // Shop không được sửa sản phẩm đã bị admin khóa.
+    this.assertSellerCanEditProduct(product, actorRole);
+
+    if (patch.status !== undefined) {
+      this.assertCanChangeStatus(actorRole, patch.status);
+    }
+
     if ((patch as any).categoryId !== undefined) {
       const resolvedCategoryId = await this.resolveCategoryId((patch as any).categoryId);
+
       product.categoryId =
         resolvedCategoryId === undefined ? product.categoryId : resolvedCategoryId;
     }
@@ -591,10 +782,6 @@ export class ProductsService {
       if (patch.status === ProductStatus.ACTIVE && !product.publishedAt) {
         product.publishedAt = new Date();
       }
-
-      if (patch.status === ProductStatus.DRAFT) {
-        product.publishedAt = null;
-      }
     }
 
     try {
@@ -603,6 +790,7 @@ export class ProductsService {
       if (this.isUniqueViolation(error)) {
         throw new ConflictException('Slug sản phẩm đã tồn tại');
       }
+
       throw error;
     }
   }
@@ -610,7 +798,12 @@ export class ProductsService {
   async removeProduct(id: number, actorId: number, actorRole: UserRole) {
     const product = await this.assertCanManageProduct(id, actorId, actorRole);
 
+    if (product.deletedAt) {
+      throw new BadRequestException('Sản phẩm đã bị xóa trước đó');
+    }
+
     const shop = await this.shopsRepo.findOne({ where: { id: product.shopId } });
+
     if (!shop) {
       throw new NotFoundException('Không tìm thấy shop của sản phẩm');
     }
@@ -619,9 +812,12 @@ export class ProductsService {
       const productRepo = trx.getRepository(Product);
       const statsRepo = trx.getRepository(ShopStats);
 
-      await productRepo.delete({ id });
+      // Xóa mềm, không xóa cứng khỏi database.
+      // TypeORM sẽ tự gán deleted_at = NOW().
+      await productRepo.softDelete({ id });
 
       const stats = await statsRepo.findOne({ where: { shopId: shop.id } });
+
       if (stats && stats.productCount > 0) {
         stats.productCount -= 1;
         await statsRepo.save(stats);
@@ -637,9 +833,16 @@ export class ProductsService {
     actorRole: UserRole,
     dto: GenerateVariantsDto,
   ) {
-    await this.assertCanManageProduct(productId, actorId, actorRole);
+    const product = await this.assertCanManageProduct(productId, actorId, actorRole);
+
+    // Không cho tạo/sửa variant nếu sản phẩm đã xóa mềm.
+    this.assertProductNotDeleted(product);
+
+    // Shop không được sửa variant nếu sản phẩm đã bị admin khóa.
+    this.assertSellerCanEditProduct(product, actorRole);
 
     const incoming = this.normalizeOptions(dto.options ?? []);
+
     if (!incoming.length) {
       throw new BadRequestException('Danh sách option không hợp lệ');
     }
@@ -652,27 +855,34 @@ export class ProductsService {
         const variantRepo = trx.getRepository(ProductVariant);
         const imageRepo = trx.getRepository(ProductImage);
 
-        const product = await productRepo.findOne({ where: { id: productId } });
-        if (!product) {
+        const productInTx = await productRepo.findOne({
+          where: { id: productId },
+          withDeleted: true,
+        });
+
+        if (!productInTx) {
           throw new NotFoundException('Không tìm thấy sản phẩm');
         }
 
-        const currentSchema: Opt[] = Array.isArray(product.optionSchema)
-          ? (product.optionSchema as Opt[])
+        if (productInTx.deletedAt) {
+          throw new BadRequestException('Sản phẩm đã bị xóa, không thể chỉnh sửa');
+        }
+
+        const currentSchema: Opt[] = Array.isArray(productInTx.optionSchema)
+          ? (productInTx.optionSchema as Opt[])
           : [];
 
         const mergedSchema =
-          mode === 'add'
-            ? this.mergeOptionSchema(currentSchema, incoming)
-            : incoming;
+          mode === 'add' ? this.mergeOptionSchema(currentSchema, incoming) : incoming;
 
         const combos = this.cartesian(mergedSchema.map((item) => item.values));
+
         if (combos.length > 5000) {
           throw new BadRequestException('Quá nhiều biến thể, tối đa 5000 tổ hợp');
         }
 
-        product.optionSchema = mergedSchema;
-        await productRepo.save(product);
+        productInTx.optionSchema = mergedSchema;
+        await productRepo.save(productInTx);
 
         let defaultImage = await imageRepo.findOne({
           where: { productId, isMain: true },
@@ -730,28 +940,30 @@ export class ProductsService {
           return Math.max(max, seq);
         }, 0);
 
-        const newVariants: DeepPartial<ProductVariant>[] = filteredCombos.map((combo) => {
-          skuCounter += 1;
+        const newVariants: DeepPartial<ProductVariant>[] = filteredCombos.map(
+          (combo) => {
+            skuCounter += 1;
 
-          const [value1, value2, value3, value4, value5] = combo;
+            const [value1, value2, value3, value4, value5] = combo;
 
-          return {
-            productId,
-            sku: `P${productId}-${String(skuCounter).padStart(4, '0')}`,
-            name: combo.join(' / '),
-            price:
-              product.price !== null && product.price !== undefined
-                ? String(product.price)
-                : null,
-            stock: 0,
-            imageId: defaultImageId,
-            value1: value1 ?? null,
-            value2: value2 ?? null,
-            value3: value3 ?? null,
-            value4: value4 ?? null,
-            value5: value5 ?? null,
-          };
-        });
+            return {
+              productId,
+              sku: `P${productId}-${String(skuCounter).padStart(4, '0')}`,
+              name: combo.join(' / '),
+              price:
+                productInTx.price !== null && productInTx.price !== undefined
+                  ? String(productInTx.price)
+                  : null,
+              stock: 0,
+              imageId: defaultImageId,
+              value1: value1 ?? null,
+              value2: value2 ?? null,
+              value3: value3 ?? null,
+              value4: value4 ?? null,
+              value5: value5 ?? null,
+            };
+          },
+        );
 
         await variantRepo.save(newVariants);
         await this.syncProductStockFromVariants(productId, trx);
@@ -765,6 +977,7 @@ export class ProductsService {
       if (this.isUniqueViolation(error)) {
         throw new ConflictException('SKU hoặc tổ hợp biến thể đã tồn tại');
       }
+
       throw error;
     }
   }
@@ -791,7 +1004,13 @@ export class ProductsService {
     actorRole: UserRole,
     dto: UpdateVariantDto,
   ) {
-    await this.assertCanManageProduct(productId, actorId, actorRole);
+    const product = await this.assertCanManageProduct(productId, actorId, actorRole);
+
+    // Không cho sửa variant nếu sản phẩm đã xóa mềm.
+    this.assertProductNotDeleted(product);
+
+    // Shop không được sửa variant nếu sản phẩm bị admin khóa.
+    this.assertSellerCanEditProduct(product, actorRole);
 
     const variant = await this.variantsRepo.findOne({
       where: { id: variantId, productId } as any,
@@ -839,12 +1058,15 @@ export class ProductsService {
 
     try {
       const saved = await this.variantsRepo.save(variant);
+
       await this.syncProductStockFromVariants(productId);
+
       return saved;
     } catch (error: any) {
       if (this.isUniqueViolation(error)) {
         throw new ConflictException('SKU hoặc tổ hợp biến thể đã tồn tại');
       }
+
       throw error;
     }
   }
