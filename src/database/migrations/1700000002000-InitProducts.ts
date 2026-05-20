@@ -21,7 +21,7 @@ export class InitProducts1700000002000 implements MigrationInterface {
 
         \`stock\` INT NOT NULL DEFAULT 0,
         \`sold\` INT NOT NULL DEFAULT 0,
-        \`status\` VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+        \`status\` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE' COMMENT 'ACTIVE=đang bán, OUT_OF_STOCK=hết hàng, LOCKED=đã khóa',
         \`published_at\` DATETIME(6) NULL,
 
         \`created_at\` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
