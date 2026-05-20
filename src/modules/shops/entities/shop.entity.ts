@@ -1,6 +1,15 @@
 import {
-  Entity, PrimaryGeneratedColumn, Column, OneToOne, OneToMany,
-  CreateDateColumn, UpdateDateColumn, DeleteDateColumn, JoinColumn, Unique, Index,
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  OneToOne,
+  OneToMany,
+  CreateDateColumn,
+  UpdateDateColumn,
+  DeleteDateColumn,
+  JoinColumn,
+  Unique,
+  Index,
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 import { ShopStats } from './shop-stats.entity';
@@ -19,13 +28,16 @@ export class Shop {
   @PrimaryGeneratedColumn({ type: 'int', unsigned: true })
   id: number;
 
-  @Column({ name: 'user_id', type: 'int', unsigned: true })
-  userId: number;
+  // Cho phép NULL để khi xóa mềm shop thì bỏ liên kết với user cũ.
+  @Column({ name: 'user_id', type: 'int', unsigned: true, nullable: true })
+  userId: number | null;
 
-  @OneToOne(() => User, (u) => u.shop, { onDelete: 'CASCADE' })
+  @OneToOne(() => User, (u) => u.shop, {
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
   @JoinColumn({ name: 'user_id' })
-  user: User;
-
+  user?: User | null;
 
   @Column({ length: 150 })
   name: string;
@@ -55,10 +67,22 @@ export class Shop {
   @Column({ name: 'shop_address', type: 'varchar', length: 255, nullable: true })
   shopAddress?: string | null;
 
-  @Column({ name: 'shop_lat', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  @Column({
+    name: 'shop_lat',
+    type: 'decimal',
+    precision: 10,
+    scale: 7,
+    nullable: true,
+  })
   shopLat?: string | null;
 
-  @Column({ name: 'shop_lng', type: 'decimal', precision: 10, scale: 7, nullable: true })
+  @Column({
+    name: 'shop_lng',
+    type: 'decimal',
+    precision: 10,
+    scale: 7,
+    nullable: true,
+  })
   shopLng?: string | null;
 
   @Index('shops_placeId_idx')

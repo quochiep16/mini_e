@@ -54,6 +54,9 @@ export class ShopsService {
       const found = await this.shopsRepo.findOne({
         where: ignoreId ? { slug, id: Not(ignoreId) } : { slug },
         select: { id: true },
+        // Slug vẫn bị unique dù shop đã xóa mềm,
+        // nên cần kiểm tra cả shop đã deleted_at.
+        withDeleted: true,
       });
 
       if (!found) return slug;
@@ -141,6 +144,9 @@ export class ShopsService {
     shop: Shop,
     nextStatus: ShopStatus,
   ) {
+    // Shop đã xóa mềm sẽ không còn userId.
+    if (!shop.userId) return;
+
     const userRepo = trx.getRepository(User);
     const owner = await userRepo.findOne({ where: { id: shop.userId } });
 
@@ -153,10 +159,11 @@ export class ShopsService {
         owner.role = UserRole.SELLER;
         await userRepo.save(owner);
       }
+
       return;
     }
 
-    // PENDING hoặc SUSPENDED thì chưa được bán
+    // PENDING hoặc SUSPENDED thì chưa được bán.
     shop.verifiedAt = null;
 
     if (owner.role === UserRole.SELLER) {
@@ -174,6 +181,7 @@ export class ShopsService {
       where: { userId },
       select: { id: true } as any,
     });
+
     if (!shop) throw new NotFoundException('Bạn chưa có shop.');
 
     const shopId = Number((shop as any).id);
@@ -241,6 +249,7 @@ export class ShopsService {
       .getRawOne<{ cnt: string }>();
 
     const cnt = Number(row?.cnt || 0);
+
     if (cnt <= 0) {
       throw new NotFoundException('Không tìm thấy đơn hàng thuộc shop của bạn.');
     }
@@ -284,14 +293,21 @@ export class ShopsService {
     const shopId = await this.getMyShopIdOrThrow(userId);
     await this.assertOrderBelongsToShop(orderId, shopId);
 
-    const order = await this.ordersRepo.findOne({ where: { id: orderId } as any });
+    const order = await this.ordersRepo.findOne({
+      where: { id: orderId } as any,
+    });
+
     if (!order) throw new NotFoundException('Không tìm thấy đơn hàng.');
 
-    if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.COMPLETED) {
+    if (
+      order.status === OrderStatus.CANCELLED ||
+      order.status === OrderStatus.COMPLETED
+    ) {
       throw new BadRequestException('Đơn hàng đã kết thúc, không thể cập nhật trạng thái.');
     }
 
     const prev = order.shippingStatus as ShippingStatus;
+
     if (prev === shippingStatus) return order;
 
     if (!this.isValidNextShipping(prev, shippingStatus)) {
@@ -319,11 +335,13 @@ export class ShopsService {
     if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
 
     const existed = await this.shopsRepo.findOne({ where: { userId } });
+
     if (existed) {
       throw new ConflictException('Bạn đã có shop và đang chờ duyệt hoặc đã được tạo trước đó.');
     }
 
     const cleanName = String(dto.name || '').trim();
+
     if (!cleanName) {
       throw new BadRequestException('Tên shop không được để trống.');
     }
@@ -333,6 +351,7 @@ export class ShopsService {
     }
 
     const user = await this.usersRepo.findOne({ where: { id: userId } });
+
     if (!user) throw new NotFoundException('Không tìm thấy user.');
 
     const slug = await this.ensureUniqueSlug(cleanName);
@@ -369,9 +388,8 @@ export class ShopsService {
 
       shop.stats = await statsRepo.save(stats);
 
-      // KHÔNG đổi role sang SELLER ở đây.
-      // Chỉ khi ADMIN duyệt ACTIVE mới đổi role.
-
+      // Không đổi role sang SELLER ở đây.
+      // Chỉ khi admin duyệt ACTIVE mới đổi role.
       return this.mapShopWithStats(shop, true);
     });
   }
@@ -401,7 +419,13 @@ export class ShopsService {
     });
 
     const mapped = items.map((shop) => this.mapShopWithStats(shop, false));
-    return { items: mapped, page, limit, total };
+
+    return {
+      items: mapped,
+      page,
+      limit,
+      total,
+    };
   }
 
   async findMine(userId: number) {
@@ -415,18 +439,24 @@ export class ShopsService {
     if (!shop) throw new NotFoundException('Bạn chưa có shop.');
 
     await this.ensureStatsForShop(shop);
+
     return this.mapShopWithStats(shop, true);
   }
 
   async findOnePublic(id: number) {
     const shop = await this.shopsRepo.findOne({
-      where: { id, status: ShopStatus.ACTIVE },
+      where: { id },
       relations: { stats: true },
+      // Lấy cả shop đã xóa mềm để trả đúng thông báo.
+      withDeleted: true,
     });
 
-    if (!shop) throw new NotFoundException('Không tìm thấy shop.');
+    if (!shop || shop.deletedAt || shop.status !== ShopStatus.ACTIVE) {
+      throw new NotFoundException('Shop không thể truy cập.');
+    }
 
     await this.ensureStatsForShop(shop);
+
     return this.mapShopWithStats(shop, false);
   }
 
@@ -437,7 +467,9 @@ export class ShopsService {
       throw new ForbiddenException('Bạn không có quyền chỉnh sửa shop này.');
     }
 
+    // Owner không được tự đổi status.
     const { status, ...safeDto } = dto as any;
+
     await this.applyUpdate(shop, safeDto, id);
 
     return this.withStats(shop.id, true);
@@ -525,12 +557,15 @@ export class ShopsService {
     }
 
     await this.removeAndRevertRole(shop);
+
     return { success: true };
   }
 
   async removeShopAsAdmin(id: number) {
     const shop = await this.getShopOrThrow(id);
+
     await this.removeAndRevertRole(shop);
+
     return { success: true };
   }
 
@@ -539,13 +574,38 @@ export class ShopsService {
       const shopRepo = trx.getRepository(Shop);
       const userRepo = trx.getRepository(User);
 
-      await shopRepo.delete({ id: shop.id });
+      const currentShop = await shopRepo.findOne({
+        where: { id: shop.id },
+        withDeleted: true,
+      });
 
-      const owner = await userRepo.findOne({ where: { id: shop.userId } });
-      if (owner && owner.role === UserRole.SELLER) {
-        owner.role = UserRole.USER;
-        await userRepo.save(owner);
+      if (!currentShop || currentShop.deletedAt) {
+        throw new NotFoundException('Không tìm thấy shop.');
       }
+
+      const oldOwnerId = currentShop.userId;
+
+      // Chuyển chủ shop cũ về USER.
+      if (oldOwnerId) {
+        const owner = await userRepo.findOne({
+          where: { id: oldOwnerId },
+        });
+
+        if (owner && owner.role === UserRole.SELLER) {
+          owner.role = UserRole.USER;
+          await userRepo.save(owner);
+        }
+      }
+
+      // Xóa mềm shop:
+      // - Không xóa dòng shop khỏi database.
+      // - Không xóa sản phẩm, thống kê, đơn hàng.
+      // - Chỉ bỏ liên kết user để user cũ có thể đăng ký shop mới.
+      currentShop.userId = null;
+      currentShop.user = null;
+      currentShop.deletedAt = new Date();
+
+      await shopRepo.save(currentShop);
     });
   }
 
@@ -558,6 +618,7 @@ export class ShopsService {
     if (!shop) throw new NotFoundException('Không tìm thấy shop.');
 
     await this.ensureStatsForShop(shop);
+
     return this.mapShopWithStats(shop, includeRevenue);
   }
 
@@ -575,6 +636,7 @@ export class ShopsService {
     await this.shopsRepo.save(shop);
 
     await this.ensureStatsForShop(shop);
+
     return this.mapShopWithStats(shop, true);
   }
 
@@ -592,6 +654,7 @@ export class ShopsService {
     await this.shopsRepo.save(shop);
 
     await this.ensureStatsForShop(shop);
+
     return this.mapShopWithStats(shop, true);
   }
 }
