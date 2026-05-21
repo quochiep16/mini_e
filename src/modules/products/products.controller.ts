@@ -15,11 +15,9 @@ import {
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/multer-options.interface';
-import { diskStorage } from 'multer';
-import { extname, join } from 'path';
-import * as fs from 'fs';
-import { randomBytes } from 'crypto';
+import { memoryStorage } from 'multer';
 import { Express } from 'express';
+
 import { cloudinary } from '../../config/cloudinary.config';
 
 import { Public } from '../../common/decorators/public.decorator';
@@ -35,30 +33,57 @@ import { UpdateProductDto } from './dto/update-product.dto';
 
 import { UserRole } from '../users/enums/user.enum';
 
+const MAX_PRODUCT_IMAGES = 6;
+const MAX_IMAGE_SIZE_MB = 2;
+
 const uploadOptions: MulterOptions = {
-  storage: diskStorage({
-    destination: (_req, _file, cb) => {
-      const dir = join(process.cwd(), 'uploads', 'products');
-      fs.mkdirSync(dir, { recursive: true });
-      cb(null, dir);
-    },
-    filename: (_req, file, cb) => {
-      const unique = `${Date.now()}-${randomBytes(6).toString('hex')}`;
-      cb(null, unique + extname(file.originalname).toLowerCase());
-    },
-  }),
+  // Dùng memoryStorage:
+  // File ảnh sẽ nằm trong RAM qua file.buffer,
+  // không tạo thư mục uploads/products nữa.
+  storage: memoryStorage(),
+
   fileFilter: (_req, file, cb) => {
     if (!/^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)) {
       return cb(
-        new BadRequestException('Chỉ chấp nhận ảnh (jpeg, png, webp, gif)'),
+        new BadRequestException('Chỉ chấp nhận ảnh jpeg, png, webp hoặc gif'),
         false,
       );
     }
 
     cb(null, true);
   },
-  limits: { fileSize: 5 * 1024 * 1024, files: 10 },
+
+  limits: {
+    fileSize: MAX_IMAGE_SIZE_MB * 1024 * 1024,
+    files: MAX_PRODUCT_IMAGES,
+  },
 };
+
+// Upload ảnh từ RAM buffer lên Cloudinary.
+// Vì dùng memoryStorage nên file sẽ có file.buffer.
+function uploadBufferToCloudinary(file: Express.Multer.File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        folder: 'mini-e/products',
+        resource_type: 'image',
+      },
+      (error, result) => {
+        if (error) {
+          return reject(error);
+        }
+
+        if (!result?.secure_url) {
+          return reject(new BadRequestException('Upload ảnh thất bại'));
+        }
+
+        resolve(result.secure_url);
+      },
+    );
+
+    uploadStream.end(file.buffer);
+  });
+}
 
 @Controller('products')
 export class ProductsController {
@@ -133,31 +158,26 @@ export class ProductsController {
 
   @UseGuards(AccessTokenGuard)
   @Post()
-  @UseInterceptors(FilesInterceptor('images', 10, uploadOptions))
+  @UseInterceptors(FilesInterceptor('images', MAX_PRODUCT_IMAGES, uploadOptions))
   async create(
     @CurrentUser('sub') userId: number,
     @Body() dto: CreateProductDto,
     @UploadedFiles() files: Express.Multer.File[] = [],
   ) {
-    const cloudinaryUrls: string[] = [];
+    let cloudinaryUrls: string[] = [];
 
     if (files.length > 0) {
-      const uploadResults = await Promise.all(
-        files.map((file) =>
-          cloudinary.uploader.upload((file as any).path, {
-            folder: 'mini-e/products',
-          }),
-        ),
+      cloudinaryUrls = await Promise.all(
+        files.map((file) => uploadBufferToCloudinary(file)),
       );
-
-      uploadResults.forEach((res) => {
-        cloudinaryUrls.push(res.secure_url);
-      });
     }
 
     const product = await this.productsService.createBySeller(userId, {
       ...dto,
-      images: cloudinaryUrls.length ? cloudinaryUrls : dto.images,
+
+      // Nếu FE gửi file ảnh dạng multipart thì dùng URL từ Cloudinary.
+      // Nếu không có file, vẫn cho phép dùng dto.images như logic cũ.
+      images: cloudinaryUrls.length > 0 ? cloudinaryUrls : dto.images,
     });
 
     return { success: true, data: product };
