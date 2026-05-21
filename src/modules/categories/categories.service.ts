@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Not, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Product } from '../products/entities/product.entity';
 import { UserRole } from '../users/enums/user.enum';
 import { Category } from './entities/category.entity';
@@ -53,6 +53,15 @@ export class CategoriesService {
     return base || 'category';
   }
 
+  private normalizeText(value?: string | null): string | null {
+    if (value === undefined || value === null) {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+
   private async slugExists(slug: string, ignoreId?: number): Promise<boolean> {
     const qb = this.categoriesRepo
       .createQueryBuilder('category')
@@ -68,7 +77,10 @@ export class CategoriesService {
     return count > 0;
   }
 
-  private async ensureUniqueSlug(base: string, ignoreId?: number): Promise<string> {
+  private async ensureUniqueSlug(
+    base: string,
+    ignoreId?: number,
+  ): Promise<string> {
     const slugBase = this.slugify(base);
 
     let candidate = slugBase;
@@ -152,7 +164,11 @@ export class CategoriesService {
       const category = this.categoriesRepo.create({
         name,
         slug,
-        description: dto.description?.trim() || null,
+        description: this.normalizeText(dto.description),
+
+        // Lưu URL ảnh category từ Cloudinary.
+        imageUrl: this.normalizeText(dto.imageUrl),
+
         parentId: dto.parentId ?? null,
         sortOrder: dto.sortOrder ?? 0,
         isActive: dto.isActive ?? true,
@@ -188,9 +204,12 @@ export class CategoriesService {
     }
 
     if (query.q?.trim()) {
-      qb.andWhere('(category.name LIKE :keyword OR category.slug LIKE :keyword)', {
-        keyword: `%${query.q.trim()}%`,
-      });
+      qb.andWhere(
+        '(category.name LIKE :keyword OR category.slug LIKE :keyword)',
+        {
+          keyword: `%${query.q.trim()}%`,
+        },
+      );
     }
 
     return qb
@@ -263,7 +282,9 @@ export class CategoriesService {
       throw new NotFoundException('Không tìm thấy category');
     }
 
-    category.children = (category.children ?? []).filter((child) => child.isActive);
+    category.children = (category.children ?? []).filter(
+      (child) => child.isActive,
+    );
 
     return category;
   }
@@ -293,7 +314,11 @@ export class CategoriesService {
     }
 
     if (dto.description !== undefined) {
-      category.description = dto.description?.trim() || null;
+      category.description = this.normalizeText(dto.description);
+    }
+
+    if (dto.imageUrl !== undefined) {
+      category.imageUrl = this.normalizeText(dto.imageUrl);
     }
 
     if (dto.sortOrder !== undefined) {

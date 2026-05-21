@@ -29,6 +29,11 @@ export class Category {
   @Column({ type: 'text', nullable: true })
   description?: string | null;
 
+  // Ảnh chính của danh mục.
+  // DB column: image_url
+  @Column({ name: 'image_url', type: 'varchar', length: 500, nullable: true })
+  imageUrl?: string | null;
+
   @Column({ name: 'parent_id', type: 'int', unsigned: true, nullable: true })
   parentId?: number | null;
 

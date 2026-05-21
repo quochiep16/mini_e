@@ -29,6 +29,19 @@ function toNullableNumber(value: unknown): unknown {
   return Number(value);
 }
 
+function toNullableString(value: unknown): unknown {
+  if (value === null || value === 'null' || value === '') {
+    return null;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+
+  return value;
+}
+
 export class UpdateCategoryDto {
   @IsOptional()
   @IsString({ message: 'name phải là chuỗi' })
@@ -44,6 +57,14 @@ export class UpdateCategoryDto {
   @IsString({ message: 'description phải là chuỗi' })
   @MaxLength(2000, { message: 'description tối đa 2000 ký tự' })
   description?: string | null;
+
+  // Nếu muốn xóa ảnh cũ, FE có thể gửi imageUrl = '' hoặc null.
+  // Nếu upload file mới, controller sẽ ghi đè imageUrl bằng URL Cloudinary.
+  @IsOptional()
+  @Transform(({ value }) => toNullableString(value))
+  @IsString({ message: 'imageUrl phải là chuỗi' })
+  @MaxLength(500, { message: 'imageUrl tối đa 500 ký tự' })
+  imageUrl?: string | null;
 
   @IsOptional()
   @Transform(({ value }) => toNullableNumber(value))

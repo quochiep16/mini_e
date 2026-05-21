@@ -21,6 +21,15 @@ function toBoolean(value: unknown): unknown {
   return value;
 }
 
+function trimToUndefined(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
 export class CreateCategoryDto {
   @IsNotEmpty({ message: 'name không được để trống' })
   @IsString({ message: 'name phải là chuỗi' })
@@ -28,14 +37,24 @@ export class CreateCategoryDto {
   name!: string;
 
   @IsOptional()
+  @Transform(({ value }) => trimToUndefined(value))
   @IsString({ message: 'slug phải là chuỗi' })
   @MaxLength(160, { message: 'slug tối đa 160 ký tự' })
   slug?: string;
 
   @IsOptional()
+  @Transform(({ value }) => trimToUndefined(value))
   @IsString({ message: 'description phải là chuỗi' })
   @MaxLength(2000, { message: 'description tối đa 2000 ký tự' })
   description?: string;
+
+  // Cho phép gửi URL ảnh sẵn nếu không upload file.
+  // Nếu FE upload file image thì controller sẽ ghi đè bằng URL Cloudinary.
+  @IsOptional()
+  @Transform(({ value }) => trimToUndefined(value))
+  @IsString({ message: 'imageUrl phải là chuỗi' })
+  @MaxLength(500, { message: 'imageUrl tối đa 500 ký tự' })
+  imageUrl?: string;
 
   @IsOptional()
   @Type(() => Number)
