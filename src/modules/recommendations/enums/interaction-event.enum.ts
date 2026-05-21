@@ -1,0 +1,8 @@
+export enum InteractionEvent {
+  CLICK = 'CLICK',
+  VIEW_DETAIL = 'VIEW_DETAIL',
+  ADD_TO_CART = 'ADD_TO_CART',
+  FAVORITE = 'FAVORITE',
+  UNFAVORITE = 'UNFAVORITE',
+  PURCHASE = 'PURCHASE',
+}

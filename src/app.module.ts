@@ -23,7 +23,7 @@ import { AddressesModule } from './modules/addresses/addresses.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { CategoriesModule } from './modules/categories/categories.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
-
+import { RecommendationsModule } from './modules/recommendations/recommendations.module';
 
 @Module({
   imports: [
@@ -63,6 +63,7 @@ import { ReviewsModule } from './modules/reviews/reviews.module';
     OrdersModule,
     CategoriesModule,
     ReviewsModule,
+    RecommendationsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AccessTokenGuard }, // yêu cầu JWT mặc định
