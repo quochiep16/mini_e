@@ -8,20 +8,43 @@ export class InitProductReviews1700000007000 implements MigrationInterface {
       CREATE TABLE product_reviews (
         id CHAR(36) NOT NULL,
         order_id CHAR(36) NOT NULL,
-        user_id INT UNSIGNED NOT NULL,
+
+        user_id INT UNSIGNED NULL,
+        user_name_snapshot VARCHAR(120) NULL,
+        user_avatar_snapshot VARCHAR(500) NULL,
+
         product_id INT UNSIGNED NOT NULL,
         rating TINYINT UNSIGNED NOT NULL,
         comment TEXT NULL,
         images JSON NULL,
+
         created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
         updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+
         PRIMARY KEY (id),
+
         UNIQUE KEY UQ_reviews_order_product (order_id, product_id),
         KEY IDX_reviews_product (product_id),
         KEY IDX_reviews_user (user_id),
-        CONSTRAINT FK_reviews_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE ON UPDATE CASCADE,
-        CONSTRAINT FK_reviews_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE ON UPDATE CASCADE,
-        CONSTRAINT FK_reviews_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
+        KEY IDX_reviews_order (order_id),
+
+        CONSTRAINT FK_reviews_order
+          FOREIGN KEY (order_id)
+          REFERENCES orders(id)
+          ON DELETE CASCADE
+          ON UPDATE CASCADE,
+
+        CONSTRAINT FK_reviews_product
+          FOREIGN KEY (product_id)
+          REFERENCES products(id)
+          ON DELETE CASCADE
+          ON UPDATE CASCADE,
+
+        CONSTRAINT FK_reviews_user
+          FOREIGN KEY (user_id)
+          REFERENCES users(id)
+          ON DELETE SET NULL
+          ON UPDATE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
   }

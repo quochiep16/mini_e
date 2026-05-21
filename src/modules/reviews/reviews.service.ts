@@ -14,6 +14,7 @@ import {
   ShippingStatus,
 } from '../orders/entities/order.entity';
 import { OrderItem } from '../orders/entities/order-item.entity';
+import { User } from '../users/entities/user.entity';
 
 @Injectable()
 export class ReviewsService {
@@ -26,6 +27,9 @@ export class ReviewsService {
 
     @InjectRepository(OrderItem)
     private readonly itemRepo: Repository<OrderItem>,
+
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
   ) {}
 
   async createForOrder(userId: number, orderId: string, dto: CreateReviewDto) {
@@ -42,6 +46,33 @@ export class ReviewsService {
     }
 
     /**
+     * Lấy thông tin user để lưu snapshot tên/avatar.
+     * Snapshot giúp review vẫn hiển thị được thông tin người đánh giá
+     * kể cả khi user bị xóa cứng sau này.
+     */
+    const reviewer = await this.userRepo.findOne({
+      where: { id: userId },
+      withDeleted: true,
+    });
+
+    if (!reviewer) {
+      throw new NotFoundException('Không tìm thấy người đánh giá');
+    }
+
+    /**
+     * Check đơn hủy/hoàn trước.
+     */
+    if (
+      order.shippingStatus === ShippingStatus.RETURNED ||
+      order.shippingStatus === ShippingStatus.CANCELED ||
+      order.status === OrderStatus.CANCELLED
+    ) {
+      throw new BadRequestException(
+        'Đơn hàng đã hủy hoặc hoàn hàng nên không thể tạo đánh giá mới',
+      );
+    }
+
+    /**
      * Với flow order hiện tại:
      * - Shop giao hàng: shippingStatus = DELIVERED
      * - User xác nhận nhận hàng: status = COMPLETED
@@ -55,16 +86,6 @@ export class ReviewsService {
     if (!canReview) {
       throw new BadRequestException(
         'Chỉ được đánh giá sau khi bạn đã xác nhận nhận hàng',
-      );
-    }
-
-    if (
-      order.shippingStatus === ShippingStatus.RETURNED ||
-      order.shippingStatus === ShippingStatus.CANCELED ||
-      order.status === OrderStatus.CANCELLED
-    ) {
-      throw new BadRequestException(
-        'Đơn hàng đã hủy hoặc hoàn hàng nên không thể tạo đánh giá mới',
       );
     }
 
@@ -122,7 +143,8 @@ export class ReviewsService {
     const comment = rawComment?.trim() ? rawComment.trim() : null;
 
     const images =
-      dto.images?.filter((url) => typeof url === 'string' && url.trim())
+      dto.images
+        ?.filter((url) => typeof url === 'string' && url.trim())
         .map((url) => url.trim()) ?? [];
 
     const review = this.reviewRepo.create({
@@ -132,6 +154,12 @@ export class ReviewsService {
       rating: dto.rating,
       comment,
       images: images.length ? images : null,
+
+      /**
+       * Snapshot user tại thời điểm tạo review.
+       */
+      userNameSnapshot: reviewer.name ?? null,
+      userAvatarSnapshot: reviewer.avatarUrl ?? null,
     });
 
     return this.reviewRepo.save(review);
@@ -174,14 +202,16 @@ export class ReviewsService {
     const qb = this.reviewRepo
       .createQueryBuilder('r')
       .leftJoinAndSelect('r.user', 'u', 'u.deletedAt IS NULL')
-      .where('r.productId = :productId', { productId })
-      .orderBy('r.createdAt', 'DESC')
+      .where('r.product_id = :productId', { productId })
+      .orderBy('r.created_at', 'DESC')
       .skip((safePage - 1) * safeLimit)
       .take(safeLimit)
       .select([
         'r.id',
         'r.orderId',
         'r.userId',
+        'r.userNameSnapshot',
+        'r.userAvatarSnapshot',
         'r.productId',
         'r.rating',
         'r.comment',
@@ -195,30 +225,42 @@ export class ReviewsService {
 
     const [rows, total] = await qb.getManyAndCount();
 
-    const items = rows.map((review) => ({
-      id: review.id,
-      orderId: review.orderId,
-      userId: review.userId,
-      productId: review.productId,
-      rating: review.rating,
-      comment: review.comment,
-      images: review.images,
-      createdAt: review.createdAt,
-      updatedAt: review.updatedAt,
-      user: review.user
-        ? {
-            id: review.user.id,
-            name: review.user.name,
-            avatarUrl: review.user.avatarUrl ?? null,
-          }
-        : null,
-    }));
+    const items = rows.map((review) => {
+      const displayName =
+        review.userNameSnapshot ?? review.user?.name ?? 'Người dùng đã xóa';
+
+      const displayAvatarUrl =
+        review.userAvatarSnapshot ?? review.user?.avatarUrl ?? null;
+
+      return {
+        id: review.id,
+        orderId: review.orderId,
+        userId: review.user?.id ?? review.userId ?? null,
+        productId: review.productId,
+        rating: review.rating,
+        comment: review.comment,
+        images: review.images,
+        createdAt: review.createdAt,
+        updatedAt: review.updatedAt,
+
+        /**
+         * user vẫn trả về để FE cũ dùng được.
+         * Nếu user đã bị xóa cứng, vẫn có name/avatar từ snapshot.
+         */
+        user: {
+          id: review.user?.id ?? review.userId ?? null,
+          name: displayName,
+          avatarUrl: displayAvatarUrl,
+          isDeleted: !review.user,
+        },
+      };
+    });
 
     const raw = await this.reviewRepo
       .createQueryBuilder('r')
       .select('COUNT(1)', 'count')
       .addSelect('AVG(r.rating)', 'avg')
-      .where('r.productId = :productId', { productId })
+      .where('r.product_id = :productId', { productId })
       .getRawOne();
 
     const count = Number(raw?.count ?? 0);

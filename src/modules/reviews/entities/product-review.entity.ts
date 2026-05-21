@@ -28,12 +28,43 @@ export class ProductReview {
   @JoinColumn({ name: 'order_id' })
   order!: Order;
 
-  @Column({ type: 'int', unsigned: true, name: 'user_id' })
-  userId!: number;
+  /**
+   * user_id cho phép NULL.
+   * Khi user bị xóa cứng, review vẫn còn và user_id sẽ thành NULL.
+   */
+  @Column({ type: 'int', unsigned: true, name: 'user_id', nullable: true })
+  userId!: number | null;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
+  /**
+   * Đổi từ CASCADE sang SET NULL để xóa cứng user không làm mất review.
+   */
+  @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'user_id' })
-  user!: User;
+  user!: User | null;
+
+  /**
+   * Snapshot tên user tại thời điểm tạo review.
+   * Dùng để hiển thị review kể cả khi user bị xóa cứng.
+   */
+  @Column({
+    type: 'varchar',
+    length: 120,
+    name: 'user_name_snapshot',
+    nullable: true,
+  })
+  userNameSnapshot!: string | null;
+
+  /**
+   * Snapshot avatar user tại thời điểm tạo review.
+   * Dùng để hiển thị review kể cả khi user bị xóa cứng.
+   */
+  @Column({
+    type: 'varchar',
+    length: 500,
+    name: 'user_avatar_snapshot',
+    nullable: true,
+  })
+  userAvatarSnapshot!: string | null;
 
   @Column({ type: 'int', unsigned: true, name: 'product_id' })
   productId!: number;
