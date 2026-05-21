@@ -17,14 +17,19 @@ import { UpdateItemDto } from './dto/update-item.dto';
 export class CartService {
   constructor(
     private readonly dataSource: DataSource,
+
     @InjectRepository(Cart)
     private readonly cartRepo: Repository<Cart>,
+
     @InjectRepository(CartItem)
     private readonly itemRepo: Repository<CartItem>,
+
     @InjectRepository(Product)
     private readonly productRepo: Repository<Product>,
+
     @InjectRepository(ProductVariant)
     private readonly variantRepo: Repository<ProductVariant>,
+
     @InjectRepository(ProductImage)
     private readonly imageRepo: Repository<ProductImage>,
   ) {}
@@ -77,6 +82,21 @@ export class CartService {
     );
   }
 
+  /**
+   * Kiểm tra sản phẩm có bị soft delete hay chưa.
+   *
+   * Lý do dùng cả deletedAt và deleted_at:
+   * - Entity TypeORM thường đặt tên property là deletedAt.
+   * - Database column thường là deleted_at.
+   * - Cách này giúp code an toàn hơn nếu entity đang map theo một trong hai kiểu.
+   */
+  private isProductSoftDeleted(product: Product): boolean {
+    const anyProduct = product as any;
+    const deletedAt = anyProduct.deletedAt ?? anyProduct.deleted_at ?? null;
+
+    return deletedAt !== null && deletedAt !== undefined;
+  }
+
   private async getOrCreateCart(
     userId: number,
     manager?: EntityManager,
@@ -125,7 +145,12 @@ export class CartService {
     });
 
     const itemsCount = items.length;
-    const itemsQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+
+    const itemsQuantity = items.reduce(
+      (sum, item) => sum + item.quantity,
+      0,
+    );
+
     const subtotal = items.reduce(
       (sum, item) => sum + Number(item.price) * item.quantity,
       0,
@@ -138,6 +163,81 @@ export class CartService {
     });
   }
 
+  /**
+   * Hàm này dùng khi mở giỏ hàng.
+   *
+   * Nếu product trong cart_items:
+   * - không còn tồn tại
+   * - hoặc đã bị soft delete: deleted_at/deletedAt có dữ liệu
+   *
+   * Thì xóa luôn item đó khỏi giỏ hàng.
+   */
+  private async removeDeletedProductItemsFromCart(
+    cartId: number,
+    items: CartItem[],
+    manager?: EntityManager,
+  ): Promise<CartItem[]> {
+    if (!items.length) return items;
+
+    const itemRepo = this.getItemRepo(manager);
+    const productRepo = this.getProductRepo(manager);
+
+    const productIds = [
+      ...new Set(items.map((item) => item.productId).filter(Boolean)),
+    ];
+
+    if (!productIds.length) {
+      await itemRepo.delete({ cartId });
+      await this.recalcTotals(cartId, manager);
+      return [];
+    }
+
+    /**
+     * withDeleted: true để lấy được cả product đã soft delete.
+     * Nếu không có withDeleted, TypeORM có thể tự bỏ qua record có deletedAt,
+     * khi đó mình không biết chính xác nó bị xóa mềm hay không tồn tại.
+     */
+    const products = await productRepo.find({
+      where: {
+        id: In(productIds),
+      },
+      withDeleted: true,
+    });
+
+    const productMap = new Map<number, Product>();
+
+    for (const product of products) {
+      productMap.set(product.id, product);
+    }
+
+    const removeItemIds: number[] = [];
+
+    for (const item of items) {
+      const product = productMap.get(item.productId);
+
+      /**
+       * Nếu product không tồn tại hoặc product đã bị soft delete
+       * thì xóa khỏi giỏ hàng.
+       */
+      if (!product || this.isProductSoftDeleted(product)) {
+        removeItemIds.push(item.id);
+      }
+    }
+
+    if (!removeItemIds.length) {
+      return items;
+    }
+
+    await itemRepo.delete({
+      cartId,
+      id: In(removeItemIds),
+    });
+
+    await this.recalcTotals(cartId, manager);
+
+    return items.filter((item) => !removeItemIds.includes(item.id));
+  }
+
   private async resolveProductAndVariant(
     productId: number,
     variantId: number,
@@ -148,10 +248,15 @@ export class CartService {
 
     const product = await productRepo.findOne({
       where: { id: productId },
+      withDeleted: true,
     });
 
     if (!product) {
       throw new NotFoundException('Không tìm thấy sản phẩm');
+    }
+
+    if (this.isProductSoftDeleted(product)) {
+      throw new BadRequestException('Sản phẩm đã bị xóa');
     }
 
     if (!this.isProductPurchasable(product)) {
@@ -240,16 +345,47 @@ export class CartService {
   // ========================================
 
   async getCart(userId: number) {
-    const cart = await this.getOrCreateCart(userId);
+    let result: { cart: Cart; items: CartItem[] } | null = null;
 
-    const items = await this.itemRepo.find({
-      where: { cartId: cart.id },
-      order: { id: 'ASC' },
+    await this.dataSource.transaction(async (manager) => {
+      const cartRepo = this.getCartRepo(manager);
+      const itemRepo = this.getItemRepo(manager);
+
+      const cart = await this.getOrCreateCart(userId, manager);
+
+      const items = await itemRepo.find({
+        where: { cartId: cart.id },
+        order: { id: 'ASC' },
+      });
+
+      /**
+       * Khi mở giỏ hàng:
+       * - product.deleted_at null => giữ lại hiển thị
+       * - product.deleted_at có dữ liệu => xóa khỏi giỏ
+       */
+      const validItems = await this.removeDeletedProductItemsFromCart(
+        cart.id,
+        items,
+        manager,
+      );
+
+      /**
+       * Sau khi có thể đã xóa item bị soft delete,
+       * cần lấy lại cart mới nhất để subtotal/itemsCount/itemsQuantity đúng.
+       */
+      const freshCart = await cartRepo.findOne({
+        where: { id: cart.id },
+      });
+
+      result = {
+        cart: freshCart ?? cart,
+        items: validItems,
+      };
     });
 
     return {
-      ...cart,
-      items,
+      ...result!.cart,
+      items: result!.items,
     };
   }
 
@@ -275,6 +411,7 @@ export class CartService {
       }
 
       const itemRepo = this.getItemRepo(manager);
+
       const snapImage = await this.resolveImageSnapshot(
         product.id,
         variant,
