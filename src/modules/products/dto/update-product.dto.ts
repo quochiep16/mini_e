@@ -43,9 +43,9 @@ export class UpdateProductDto {
   @Min(0, { message: 'price phải ≥ 0' })
   price?: number;
 
-  // ACTIVE: đang bán
-  // OUT_OF_STOCK: hết hàng
-  // LOCKED: đã khóa
+  // ACTIVE = đang bán
+  // OUT_OF_STOCK = hết hàng
+  // LOCKED = đã khóa
   @IsOptional()
   @IsEnum(ProductStatus, { message: 'status không hợp lệ' })
   status?: ProductStatus;

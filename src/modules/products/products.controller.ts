@@ -37,9 +37,8 @@ const MAX_PRODUCT_IMAGES = 6;
 const MAX_IMAGE_SIZE_MB = 2;
 
 const uploadOptions: MulterOptions = {
-  // Dùng memoryStorage:
-  // File ảnh sẽ nằm trong RAM qua file.buffer,
-  // không tạo thư mục uploads/products nữa.
+  // File nằm tạm trong RAM qua file.buffer.
+  // Không tạo thư mục uploads/products nữa.
   storage: memoryStorage(),
 
   fileFilter: (_req, file, cb) => {
@@ -59,8 +58,6 @@ const uploadOptions: MulterOptions = {
   },
 };
 
-// Upload ảnh từ RAM buffer lên Cloudinary.
-// Vì dùng memoryStorage nên file sẽ có file.buffer.
 function uploadBufferToCloudinary(file: Express.Multer.File): Promise<string> {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
@@ -90,8 +87,8 @@ export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
   // Public: người mua xem danh sách sản phẩm.
-  // Chỉ lấy sản phẩm chưa bị xóa mềm, shop ACTIVE,
-  // product status ACTIVE hoặc OUT_OF_STOCK.
+  // Không lấy product đã deleted_at.
+  // Không lấy product LOCKED.
   @Public()
   @Get()
   async list(@Query() q: QueryProductsDto) {
@@ -100,7 +97,8 @@ export class ProductsController {
   }
 
   // Public: người mua xem sản phẩm theo shop.
-  // Không trả sản phẩm LOCKED hoặc đã deleted_at.
+  // Không lấy product đã deleted_at.
+  // Không lấy product LOCKED.
   @Public()
   @Get('by-shop/:shopId')
   async listByShop(
@@ -118,8 +116,8 @@ export class ProductsController {
   }
 
   // Seller: xem sản phẩm của shop mình.
-  // Seller thấy ACTIVE, OUT_OF_STOCK, LOCKED.
-  // Seller không thấy sản phẩm đã deleted_at.
+  // Lấy ACTIVE, OUT_OF_STOCK, LOCKED.
+  // Không lấy product đã deleted_at.
   @UseGuards(AccessTokenGuard)
   @Get('my-shop')
   async listMyShopProducts(
@@ -130,8 +128,8 @@ export class ProductsController {
     return { success: true, data };
   }
 
-  // Admin: xem toàn bộ sản phẩm, bao gồm cả sản phẩm đã deleted_at.
-  // Admin chỉ được xem deleted_at, không được sửa product đã deleted_at.
+  // Admin: xem toàn bộ sản phẩm.
+  // Có lấy cả product đã deleted_at.
   @UseGuards(AccessTokenGuard)
   @Get('admin/all')
   async listForAdmin(
@@ -149,6 +147,9 @@ export class ProductsController {
     return { success: true, data };
   }
 
+  // Public detail:
+  // Product đã deleted_at sẽ không xem được.
+  // Product LOCKED sẽ không xem được.
   @Public()
   @Get(':id')
   async detail(@Param('id', ParseIntPipe) id: number) {
@@ -174,9 +175,6 @@ export class ProductsController {
 
     const product = await this.productsService.createBySeller(userId, {
       ...dto,
-
-      // Nếu FE gửi file ảnh dạng multipart thì dùng URL từ Cloudinary.
-      // Nếu không có file, vẫn cho phép dùng dto.images như logic cũ.
       images: cloudinaryUrls.length > 0 ? cloudinaryUrls : dto.images,
     });
 

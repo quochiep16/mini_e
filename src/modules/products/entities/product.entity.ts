@@ -22,7 +22,7 @@ export enum ProductStatus {
   // Hết hàng
   OUT_OF_STOCK = 'OUT_OF_STOCK',
 
-  // Đã khóa bởi admin vì vi phạm
+  // Đã khóa bởi admin
   LOCKED = 'LOCKED',
 }
 
@@ -61,12 +61,11 @@ export class Product {
   @Column({ type: 'text', nullable: true })
   description?: string | null;
 
-  // Lưu cấu trúc tối đa 5 ô option cho riêng product
-  // ví dụ: [{ name: 'Màu', values: ['Đỏ','Xanh'] }, { name: 'Size', values: ['M','L'] }]
+  // Lưu cấu trúc option của sản phẩm.
+  // Ví dụ: [{ name: 'Màu', values: ['Đỏ', 'Xanh'] }]
   @Column({ name: 'option_schema', type: 'json', nullable: true })
   optionSchema?: { name: string; values: string[] }[] | null;
 
-  // DECIMAL -> nên map string ở runtime để tránh sai số
   @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
   price: number;
 
@@ -88,7 +87,6 @@ export class Product {
   @Column({ type: 'int', default: 0 })
   sold: number;
 
-  // Dùng varchar để khớp với migration hiện tại.
   // ACTIVE = đang bán
   // OUT_OF_STOCK = hết hàng
   // LOCKED = đã khóa
@@ -108,8 +106,8 @@ export class Product {
   @UpdateDateColumn({ name: 'updated_at', type: 'datetime' })
   updatedAt: Date;
 
-  // Xóa mềm sản phẩm.
-  // Khi xóa product sẽ chỉ gán deleted_at, không xóa cứng khỏi database.
+  // Xóa mềm.
+  // Khi gọi softDelete(), TypeORM sẽ tự gán deleted_at = NOW().
   @DeleteDateColumn({ name: 'deleted_at', type: 'datetime', nullable: true })
   deletedAt?: Date | null;
 

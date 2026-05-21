@@ -12,7 +12,6 @@ import {
   EntityManager,
   In,
   IsNull,
-  Not,
   Repository,
 } from 'typeorm';
 
@@ -355,7 +354,9 @@ export class ProductsService {
   private assertCanChangeStatus(actorRole: UserRole, nextStatus: ProductStatus) {
     if (actorRole === UserRole.ADMIN) {
       if (nextStatus !== ProductStatus.LOCKED) {
-        throw new ForbiddenException('Admin chỉ được chuyển sản phẩm sang trạng thái đã khóa');
+        throw new ForbiddenException(
+          'Admin chỉ được chuyển sản phẩm sang trạng thái đã khóa',
+        );
       }
 
       return;
@@ -394,7 +395,9 @@ export class ProductsService {
       ? manager.getRepository(ProductVariant)
       : this.variantsRepo;
 
-    const productsRepo = manager ? manager.getRepository(Product) : this.productsRepo;
+    const productsRepo = manager
+      ? manager.getRepository(Product)
+      : this.productsRepo;
 
     const variants = await variantsRepo.find({
       where: { productId } as any,
@@ -445,10 +448,7 @@ export class ProductsService {
           description: dto.description?.trim() || null,
           price: Number(Number(dto.price).toFixed(2)),
           stock: 0,
-
-          // Sản phẩm mới mặc định là đang bán.
           status: ProductStatus.ACTIVE,
-
           publishedAt: new Date(),
           optionSchema: null,
         });
@@ -738,7 +738,7 @@ export class ProductsService {
   ) {
     const product = await this.assertCanManageProduct(id, actorId, actorRole);
 
-    // Không cho sửa sản phẩm đã bị soft delete.
+    // Một khi deleted_at đã có giá trị thì không cho sửa nữa.
     this.assertProductNotDeleted(product);
 
     // Shop không được sửa sản phẩm đã bị admin khóa.
@@ -812,8 +812,10 @@ export class ProductsService {
       const productRepo = trx.getRepository(Product);
       const statsRepo = trx.getRepository(ShopStats);
 
-      // Xóa mềm, không xóa cứng khỏi database.
-      // TypeORM sẽ tự gán deleted_at = NOW().
+      // Quan trọng:
+      // Không dùng delete().
+      // Dùng softDelete() để TypeORM tự gán deleted_at = NOW().
+      // Product_images và product_variants không bị xóa theo.
       await productRepo.softDelete({ id });
 
       const stats = await statsRepo.findOne({ where: { shopId: shop.id } });
@@ -835,10 +837,7 @@ export class ProductsService {
   ) {
     const product = await this.assertCanManageProduct(productId, actorId, actorRole);
 
-    // Không cho tạo/sửa variant nếu sản phẩm đã xóa mềm.
     this.assertProductNotDeleted(product);
-
-    // Shop không được sửa variant nếu sản phẩm đã bị admin khóa.
     this.assertSellerCanEditProduct(product, actorRole);
 
     const incoming = this.normalizeOptions(dto.options ?? []);
@@ -873,7 +872,9 @@ export class ProductsService {
           : [];
 
         const mergedSchema =
-          mode === 'add' ? this.mergeOptionSchema(currentSchema, incoming) : incoming;
+          mode === 'add'
+            ? this.mergeOptionSchema(currentSchema, incoming)
+            : incoming;
 
         const combos = this.cartesian(mergedSchema.map((item) => item.values));
 
@@ -937,6 +938,7 @@ export class ProductsService {
         let skuCounter = existingVariants.reduce((max, variant) => {
           const match = variant.sku?.match(new RegExp(`^P${productId}-(\\d+)$`));
           const seq = match ? Number(match[1]) : 0;
+
           return Math.max(max, seq);
         }, 0);
 
@@ -983,7 +985,11 @@ export class ProductsService {
   }
 
   async listVariants(productId: number, actorId: number, actorRole: UserRole) {
-    const product = await this.assertCanManageProduct(productId, actorId, actorRole);
+    const product = await this.assertCanManageProduct(
+      productId,
+      actorId,
+      actorRole,
+    );
 
     const schema: Opt[] = Array.isArray(product.optionSchema)
       ? (product.optionSchema as Opt[])
@@ -1004,12 +1010,13 @@ export class ProductsService {
     actorRole: UserRole,
     dto: UpdateVariantDto,
   ) {
-    const product = await this.assertCanManageProduct(productId, actorId, actorRole);
+    const product = await this.assertCanManageProduct(
+      productId,
+      actorId,
+      actorRole,
+    );
 
-    // Không cho sửa variant nếu sản phẩm đã xóa mềm.
     this.assertProductNotDeleted(product);
-
-    // Shop không được sửa variant nếu sản phẩm bị admin khóa.
     this.assertSellerCanEditProduct(product, actorRole);
 
     const variant = await this.variantsRepo.findOne({
