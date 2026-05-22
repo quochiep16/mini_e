@@ -31,6 +31,13 @@ function parseOptionalPositiveInt(value?: string): number | undefined {
   return parsed;
 }
 
+function parsePageLimit(page = '1', limit = '20') {
+  const p = Math.max(1, parseInt(page, 10) || 1);
+  const l = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
+
+  return { page: p, limit: l };
+}
+
 @Controller()
 export class ReviewsController {
   constructor(private readonly service: ReviewsService) {}
@@ -64,10 +71,38 @@ export class ReviewsController {
     @Query('page') page = '1',
     @Query('limit') limit = '20',
   ) {
-    const p = Math.max(1, parseInt(page, 10) || 1);
-    const l = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
+    const parsed = parsePageLimit(page, limit);
 
-    const data = await this.service.listByProduct(productId, p, l);
+    const data = await this.service.listByProduct(
+      productId,
+      parsed.page,
+      parsed.limit,
+    );
+
+    return { success: true, data };
+  }
+
+  /**
+   * Lấy tất cả review của tất cả sản phẩm thuộc 1 shop.
+   *
+   * API:
+   * GET /reviews/shop/:shopId?page=1&limit=20
+   */
+  @Public()
+  @Get('reviews/shop/:shopId')
+  async listByShop(
+    @Param('shopId', ParseIntPipe) shopId: number,
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+  ) {
+    const parsed = parsePageLimit(page, limit);
+
+    const data = await this.service.listByShop(
+      shopId,
+      parsed.page,
+      parsed.limit,
+    );
+
     return { success: true, data };
   }
 
