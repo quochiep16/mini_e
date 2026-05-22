@@ -19,6 +19,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { QueryUserDto } from './dto/query-user.dto';
+
 import { Roles } from '../../common/decorators/roles.decorator';
 import { AppRole } from '../../common/constants/roles';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -54,16 +55,16 @@ export class UsersController {
   }
 
   @Delete('me')
-  async deactivateMe(@CurrentUser('id') userId: number, @Res() res: Response) {
-    await this.usersService.deactivate(Number(userId));
+  async deleteMe(@CurrentUser('id') userId: number, @Res() res: Response) {
+    await this.usersService.softDelete(Number(userId));
 
     return res.status(HttpStatus.OK).json({
       success: true,
       statusCode: HttpStatus.OK,
       data: {
         id: Number(userId),
-        deactivated: true,
-        message: 'Tài khoản đã được vô hiệu hóa',
+        deleted: true,
+        message: 'Tài khoản đã được xóa mềm',
       },
     });
   }
@@ -93,9 +94,9 @@ export class UsersController {
   }
 
   @Roles(AppRole.ADMIN)
-  @Get('deactivated/all')
-  async findAllDeactivated(@Query() q: QueryUserDto, @Res() res: Response) {
-    const result = await this.usersService.findAllDeactivated(q);
+  @Get('deleted/all')
+  async findAllDeleted(@Query() q: QueryUserDto, @Res() res: Response) {
+    const result = await this.usersService.findAllDeleted(q);
 
     return res.status(HttpStatus.OK).json({
       success: true,
@@ -134,16 +135,48 @@ export class UsersController {
 
   @Roles(AppRole.ADMIN)
   @Delete(':id')
-  async deactivate(@Param('id', ParseIntPipe) id: number, @Res() res: Response) {
-    await this.usersService.deactivate(id);
+  async remove(@Param('id', ParseIntPipe) id: number, @Res() res: Response) {
+    await this.usersService.softDelete(id);
 
     return res.status(HttpStatus.OK).json({
       success: true,
       statusCode: HttpStatus.OK,
       data: {
         id,
-        deactivated: true,
-        message: 'Tài khoản đã được vô hiệu hóa',
+        deleted: true,
+        message: 'User đã được xóa mềm',
+      },
+    });
+  }
+
+  @Roles(AppRole.ADMIN)
+  @Post(':id/restore')
+  async restore(@Param('id', ParseIntPipe) id: number, @Res() res: Response) {
+    await this.usersService.restore(id);
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      statusCode: HttpStatus.OK,
+      data: {
+        id,
+        restored: true,
+      },
+    });
+  }
+
+  @Roles(AppRole.ADMIN)
+  @Delete(':id/hard')
+  async hardRemove(@Param('id', ParseIntPipe) id: number, @Res() res: Response) {
+    await this.usersService.hardDelete(id);
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      statusCode: HttpStatus.OK,
+      data: {
+        id,
+        deleted: true,
+        hardDeleted: true,
+        message: 'User đã được xóa cứng',
       },
     });
   }

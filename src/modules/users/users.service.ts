@@ -6,7 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DeepPartial, Not, Repository } from 'typeorm';
+import { DataSource, DeepPartial, Not, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
 
@@ -22,6 +22,7 @@ export class UsersService {
   constructor(
     @InjectRepository(User) private readonly repo: Repository<User>,
     private readonly config: ConfigService,
+    private readonly dataSource: DataSource,
   ) {}
 
   private get ROOT_ADMIN_EMAIL(): string {
@@ -63,6 +64,7 @@ export class UsersService {
     const rounds = Number(this.config.get('BCRYPT_SALT_ROUNDS') ?? 12);
     const pepper = this.config.get<string>('BCRYPT_PEPPER');
     const toHash = pepper ? password + pepper : password;
+
     return bcrypt.hash(toHash, rounds);
   }
 
@@ -86,17 +88,6 @@ export class UsersService {
       user.systemCode === this.ROOT_ADMIN_CODE ||
       user.email === this.ROOT_ADMIN_EMAIL
     );
-  }
-
-  private makeDeactivatedEmail(id: number, now: Date) {
-    // Cố tình không có @ để không qua IsEmail ở login nếu người dùng nhập lại.
-    return `deleted_user_${id}_${now.getTime()}`;
-  }
-
-  private makeDeactivatedPhone(id: number, now: Date) {
-    // Có chữ D nên không qua regex phone: /^\+?[0-9]{8,15}$/.
-    // Giữ tối đa 20 ký tự để phù hợp cột phone varchar(20).
-    return `D${id}${String(now.getTime()).slice(-9)}`.slice(0, 20);
   }
 
   private async findActiveEntityById(id: number): Promise<User> {
@@ -136,6 +127,59 @@ export class UsersService {
     return user;
   }
 
+  private async softDeleteUserShopAndProducts(
+    userId: number,
+    deletedAt: Date,
+    queryRunner: any,
+  ): Promise<void> {
+    /**
+     * Theo database hiện tại: mỗi user có tối đa 1 shop.
+     * Nhưng viết dạng nhiều shop để an toàn nếu sau này mở rộng.
+     */
+    const shops = await queryRunner.query(
+      `
+      SELECT id
+      FROM shops
+      WHERE user_id = ?
+        AND deleted_at IS NULL
+      `,
+      [userId],
+    );
+
+    if (!shops.length) {
+      return;
+    }
+
+    const shopIds = shops.map((shop: any) => Number(shop.id));
+    const shopPlaceholders = shopIds.map(() => '?').join(',');
+
+    /**
+     * 1. Xóa mềm toàn bộ product active của shop.
+     */
+    await queryRunner.query(
+      `
+      UPDATE products
+      SET deleted_at = ?
+      WHERE shop_id IN (${shopPlaceholders})
+        AND deleted_at IS NULL
+      `,
+      [deletedAt, ...shopIds],
+    );
+
+    /**
+     * 2. Xóa mềm shop.
+     */
+    await queryRunner.query(
+      `
+      UPDATE shops
+      SET deleted_at = ?
+      WHERE id IN (${shopPlaceholders})
+        AND deleted_at IS NULL
+      `,
+      [deletedAt, ...shopIds],
+    );
+  }
+
   async create(dto: CreateUserDto) {
     const email = this.normalizeEmail(dto.email);
     const phone = this.normalizePhone(dto.phone);
@@ -147,6 +191,7 @@ export class UsersService {
     if (email) {
       const exists = await this.repo.findOne({
         where: { email } as any,
+        withDeleted: true,
       });
 
       if (exists) {
@@ -157,6 +202,7 @@ export class UsersService {
     if (phone) {
       const existsPhone = await this.repo.findOne({
         where: { phone } as any,
+        withDeleted: true,
       });
 
       if (existsPhone) {
@@ -258,7 +304,7 @@ export class UsersService {
     };
   }
 
-  async findAllDeactivated(q: QueryUserDto) {
+  async findAllDeleted(q: QueryUserDto) {
     const page = Math.max(Number(q.page ?? 1), 1);
     const limit = Math.min(Math.max(Number(q.limit ?? 20), 1), 100);
 
@@ -279,6 +325,9 @@ export class UsersService {
     const sortOrder: 'ASC' | 'DESC' = rawSortOrder === 'ASC' ? 'ASC' : 'DESC';
 
     const allowSort = new Set([
+      'deletedAt',
+      'createdAt',
+      'updatedAt',
       'id',
       'name',
       'email',
@@ -286,10 +335,7 @@ export class UsersService {
       'role',
       'isVerified',
       'isSystem',
-      'createdAt',
-      'updatedAt',
       'lastLoginAt',
-      'deletedAt',
     ]);
 
     const safeSortBy = allowSort.has(sortBy) ? sortBy : 'deletedAt';
@@ -353,6 +399,7 @@ export class UsersService {
           email: nextEmail,
           id: Not(user.id),
         } as any,
+        withDeleted: true,
       });
 
       if (existed) {
@@ -366,6 +413,7 @@ export class UsersService {
           phone: nextPhone,
           id: Not(user.id),
         } as any,
+        withDeleted: true,
       });
 
       if (existed) {
@@ -373,10 +421,8 @@ export class UsersService {
       }
     }
 
-    const password = (dto as UpdateUserDto).password;
-
-    if (allowAdminFields && password) {
-      user.passwordHash = await this.hashPassword(password);
+    if (allowAdminFields && (dto as UpdateUserDto).password) {
+      user.passwordHash = await this.hashPassword((dto as UpdateUserDto).password!);
     }
 
     if (dto.name !== undefined) {
@@ -384,23 +430,23 @@ export class UsersService {
     }
 
     if ((dto as any).email !== undefined) {
-      user.email = nextEmail;
+      (user as any).email = nextEmail ?? null;
     }
 
     if ((dto as any).phone !== undefined) {
-      user.phone = nextPhone;
+      (user as any).phone = nextPhone ?? null;
     }
 
     if (dto.avatarUrl !== undefined) {
-      user.avatarUrl = dto.avatarUrl?.trim() ? dto.avatarUrl.trim() : (null as any);
+      (user as any).avatarUrl = dto.avatarUrl?.trim() || null;
     }
 
     if (dto.birthday !== undefined) {
-      user.birthday = dto.birthday ?? (null as any);
+      (user as any).birthday = dto.birthday ?? null;
     }
 
     if (dto.gender !== undefined) {
-      user.gender = dto.gender ?? (null as any);
+      (user as any).gender = dto.gender ?? null;
     }
 
     if (allowAdminFields) {
@@ -433,46 +479,391 @@ export class UsersService {
     }
   }
 
-  async deactivate(id: number): Promise<void> {
+  async softDelete(id: number): Promise<void> {
     await this.assertNotRootAdminTarget(id);
 
-    const user = await this.findActiveEntityById(id);
+    const existed = await this.repo.findOne({
+      where: { id },
+      withDeleted: true,
+    });
 
-    const now = new Date();
-    const randomPassword = `deactivated_${id}_${now.getTime()}_${Math.random()}`;
+    if (!existed) {
+      throw new NotFoundException('User không tồn tại');
+    }
 
-    /**
-     * Khi vô hiệu hóa user:
-     * - Giữ nguyên name
-     * - Giữ nguyên avatarUrl
-     * - Đổi email để không thể đăng nhập bằng email cũ
-     * - Đổi phone để không thể đăng nhập bằng số điện thoại cũ
-     * - Đổi passwordHash để mật khẩu cũ không còn dùng được
-     * - Xóa OTP
-     * - Set deletedAt để guard chặn gọi API
-     */
-    user.email = this.makeDeactivatedEmail(id, now);
-    user.phone = this.makeDeactivatedPhone(id, now);
-    user.passwordHash = await this.hashPassword(randomPassword);
+    if (existed.deletedAt) {
+      throw new NotFoundException('User không tồn tại');
+    }
 
-    // Giữ nguyên:
-    // user.name
-    // user.avatarUrl
+    const queryRunner = this.dataSource.createQueryRunner();
 
-    user.otp = null as any;
-    user.timeOtp = null as any;
-    user.lastLoginAt = null as any;
-    user.isVerified = false;
-    user.deletedAt = now;
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
     try {
-      await this.repo.save(user);
-    } catch (e: any) {
-      if (this.isUniqueViolation(e)) {
-        throw new ConflictException('Không thể vô hiệu hóa user do trùng dữ liệu');
+      const now = new Date();
+
+      /**
+       * Nếu user có shop active:
+       * - set products.deleted_at = now
+       * - set shops.deleted_at = now
+       */
+      await this.softDeleteUserShopAndProducts(id, now, queryRunner);
+
+      /**
+       * Xóa mềm user.
+       * Không đổi email, phone, name, avatarUrl.
+       */
+      const result = await queryRunner.manager
+        .createQueryBuilder()
+        .update(User)
+        .set({
+          deletedAt: now,
+        } as any)
+        .where('id = :id', { id })
+        .andWhere('deletedAt IS NULL')
+        .execute();
+
+      if (!result.affected) {
+        throw new NotFoundException('User không tồn tại');
       }
 
-      throw e;
+      await queryRunner.commitTransaction();
+    } catch (e) {
+      await queryRunner.rollbackTransaction();
+
+      if (
+        e instanceof NotFoundException ||
+        e instanceof BadRequestException ||
+        e instanceof ForbiddenException
+      ) {
+        throw e;
+      }
+
+      throw new BadRequestException('Không thể xóa mềm user');
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  async restore(id: number): Promise<void> {
+    await this.assertNotRootAdminTarget(id);
+
+    const existed = await this.repo.findOne({
+      where: { id },
+      withDeleted: true,
+    });
+
+    if (!existed) {
+      throw new NotFoundException('User không tồn tại');
+    }
+
+    if (!existed.deletedAt) {
+      return;
+    }
+
+    const res = await this.repo.restore(id);
+
+    if (!res.affected) {
+      throw new NotFoundException('User không tồn tại');
+    }
+  }
+
+  async hardDelete(id: number): Promise<void> {
+    await this.assertNotRootAdminTarget(id);
+
+    const existed = await this.repo.findOne({
+      where: { id },
+      withDeleted: true,
+    });
+
+    if (!existed) {
+      throw new NotFoundException('User không tồn tại');
+    }
+
+    if (!existed.deletedAt) {
+      throw new BadRequestException('Chỉ được xóa cứng user đã xóa mềm trước đó');
+    }
+
+    const queryRunner = this.dataSource.createQueryRunner();
+
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const shops = await queryRunner.query(
+        `
+        SELECT id
+        FROM shops
+        WHERE user_id = ?
+        `,
+        [id],
+      );
+
+      const shopIds = shops.map((item: any) => Number(item.id));
+      const shopPlaceholders = shopIds.map(() => '?').join(',');
+
+      let productIds: number[] = [];
+      let variantIds: number[] = [];
+
+      if (shopIds.length > 0) {
+        const products = await queryRunner.query(
+          `
+          SELECT id
+          FROM products
+          WHERE shop_id IN (${shopPlaceholders})
+          `,
+          shopIds,
+        );
+
+        productIds = products.map((item: any) => Number(item.id));
+      }
+
+      const productPlaceholders = productIds.map(() => '?').join(',');
+
+      if (productIds.length > 0) {
+        const variants = await queryRunner.query(
+          `
+          SELECT id
+          FROM product_variants
+          WHERE product_id IN (${productPlaceholders})
+          `,
+          productIds,
+        );
+
+        variantIds = variants.map((item: any) => Number(item.id));
+      }
+
+      const variantPlaceholders = variantIds.map(() => '?').join(',');
+
+      /**
+       * 1. Giữ lại orders và product_reviews.
+       * Muốn xóa cứng user/product mà vẫn giữ order/review thì các cột này cần nullable:
+       * - orders.user_id
+       * - product_reviews.user_id
+       * - product_reviews.product_id
+       */
+      await queryRunner.query(
+        `
+        UPDATE orders
+        SET user_id = NULL
+        WHERE user_id = ?
+        `,
+        [id],
+      );
+
+      await queryRunner.query(
+        `
+        UPDATE product_reviews
+        SET user_id = NULL
+        WHERE user_id = ?
+        `,
+        [id],
+      );
+
+      if (productIds.length > 0) {
+        await queryRunner.query(
+          `
+          UPDATE product_reviews
+          SET product_id = NULL
+          WHERE product_id IN (${productPlaceholders})
+          `,
+          productIds,
+        );
+      }
+
+      /**
+       * 2. Xóa cart của user.
+       */
+      await queryRunner.query(
+        `
+        DELETE ci
+        FROM cart_items ci
+        INNER JOIN carts c ON c.id = ci.cartId
+        WHERE c.userId = ?
+        `,
+        [id],
+      );
+
+      await queryRunner.query(
+        `
+        DELETE FROM carts
+        WHERE userId = ?
+        `,
+        [id],
+      );
+
+      /**
+       * 3. Nếu sản phẩm của shop đang nằm trong giỏ user khác,
+       * xóa các cart_items đó để tránh giỏ hàng bị trỏ tới product đã hard delete.
+       */
+      if (productIds.length > 0) {
+        await queryRunner.query(
+          `
+          DELETE FROM cart_items
+          WHERE productId IN (${productPlaceholders})
+          `,
+          productIds,
+        );
+      }
+
+      if (variantIds.length > 0) {
+        await queryRunner.query(
+          `
+          DELETE FROM cart_items
+          WHERE variantId IN (${variantPlaceholders})
+          `,
+          variantIds,
+        );
+      }
+
+      /**
+       * 4. Xóa dữ liệu phụ của user.
+       */
+      await queryRunner.query(
+        `
+        DELETE FROM user_addresses
+        WHERE userId = ?
+        `,
+        [id],
+      );
+
+      await queryRunner.query(
+        `
+        DELETE FROM product_favorites
+        WHERE user_id = ?
+        `,
+        [id],
+      );
+
+      await queryRunner.query(
+        `
+        DELETE FROM product_interactions
+        WHERE user_id = ?
+        `,
+        [id],
+      );
+
+      await queryRunner.query(
+        `
+        DELETE FROM user_category_preferences
+        WHERE user_id = ?
+        `,
+        [id],
+      );
+
+      await queryRunner.query(
+        `
+        DELETE FROM payment_sessions
+        WHERE user_id = ?
+        `,
+        [id],
+      );
+
+      /**
+       * 5. Xóa dữ liệu liên quan tới product/shop trước khi xóa product/shop.
+       */
+      if (productIds.length > 0) {
+        await queryRunner.query(
+          `
+          DELETE FROM product_favorites
+          WHERE product_id IN (${productPlaceholders})
+          `,
+          productIds,
+        );
+
+        await queryRunner.query(
+          `
+          DELETE FROM product_interactions
+          WHERE product_id IN (${productPlaceholders})
+          `,
+          productIds,
+        );
+
+        await queryRunner.query(
+          `
+          DELETE FROM product_variants
+          WHERE product_id IN (${productPlaceholders})
+          `,
+          productIds,
+        );
+
+        await queryRunner.query(
+          `
+          DELETE FROM product_images
+          WHERE product_id IN (${productPlaceholders})
+          `,
+          productIds,
+        );
+
+        await queryRunner.query(
+          `
+          DELETE FROM products
+          WHERE id IN (${productPlaceholders})
+          `,
+          productIds,
+        );
+      }
+
+      if (shopIds.length > 0) {
+        await queryRunner.query(
+          `
+          DELETE FROM product_interactions
+          WHERE shop_id IN (${shopPlaceholders})
+          `,
+          shopIds,
+        );
+
+        await queryRunner.query(
+          `
+          DELETE FROM shop_stats
+          WHERE shop_id IN (${shopPlaceholders})
+          `,
+          shopIds,
+        );
+
+        await queryRunner.query(
+          `
+          DELETE FROM shops
+          WHERE id IN (${shopPlaceholders})
+          `,
+          shopIds,
+        );
+      }
+
+      /**
+       * 6. Cuối cùng mới xóa user.
+       */
+      await queryRunner.query(
+        `
+        DELETE FROM users
+        WHERE id = ?
+        `,
+        [id],
+      );
+
+      await queryRunner.commitTransaction();
+    } catch (e: any) {
+      await queryRunner.rollbackTransaction();
+
+      const msg = String(e?.message ?? '');
+
+      if (
+        msg.includes('cannot be null') ||
+        msg.includes('Column') ||
+        msg.includes('foreign key') ||
+        msg.includes('constraint')
+      ) {
+        throw new BadRequestException(
+          'Không thể xóa cứng user vì orders/product_reviews hoặc khóa ngoại chưa cho phép SET NULL. Cần sửa migration các cột user_id/product_id sang nullable và ON DELETE SET NULL.',
+        );
+      }
+
+      throw new BadRequestException(
+        'Không thể xóa cứng user vì còn dữ liệu liên quan',
+      );
+    } finally {
+      await queryRunner.release();
     }
   }
 }

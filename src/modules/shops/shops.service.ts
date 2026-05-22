@@ -579,12 +579,11 @@ export class ShopsService {
         withDeleted: true,
       });
 
-      if (!currentShop || currentShop.deletedAt) {
+      if (!currentShop) {
         throw new NotFoundException('Không tìm thấy shop.');
       }
 
       const oldOwnerId = currentShop.userId;
-      const now = new Date();
 
       // 1. Chuyển role chủ shop cũ về USER
       if (oldOwnerId) {
@@ -598,27 +597,55 @@ export class ShopsService {
         }
       }
 
-      // 2. Xóa mềm toàn bộ sản phẩm thuộc shop
-      // Không xóa cứng khỏi database.
-      // Chỉ cập nhật products.deleted_at = now.
+      // 2. Xóa các dữ liệu phụ đang tham chiếu tới product của shop
+      // Không đụng vào orders và order_items.
       await trx.query(
         `
-        UPDATE products
-        SET deleted_at = ?
-        WHERE shop_id = ?
-          AND deleted_at IS NULL
+        DELETE pf
+        FROM product_favorites pf
+        INNER JOIN products p ON p.id = pf.product_id
+        WHERE p.shop_id = ?
         `,
-        [now, currentShop.id],
+        [currentShop.id],
       );
 
-      // 3. Xóa mềm shop
-      // Không xóa shop khỏi database.
-      // Bỏ liên kết user để user cũ có thể đăng ký shop mới.
-      currentShop.userId = null;
-      currentShop.user = null;
-      currentShop.deletedAt = now;
+      await trx.query(
+        `
+        DELETE pi
+        FROM product_interactions pi
+        INNER JOIN products p ON p.id = pi.product_id
+        WHERE p.shop_id = ?
+        `,
+        [currentShop.id],
+      );
 
-      await shopRepo.save(currentShop);
+      // Nếu product_reviews đang FK tới products và chưa đổi sang SET NULL,
+      // cần xóa review trước để tránh lỗi foreign key.
+      // Nếu bạn muốn giữ review thì không dùng đoạn này,
+      // mà phải đổi product_reviews.product_id sang nullable + ON DELETE SET NULL.
+      await trx.query(
+        `
+        DELETE pr
+        FROM product_reviews pr
+        INNER JOIN products p ON p.id = pr.product_id
+        WHERE p.shop_id = ?
+        `,
+        [currentShop.id],
+      );
+
+      // 3. Xóa cứng toàn bộ products của shop
+      // product_images và product_variants sẽ bị xóa theo nếu FK ON DELETE CASCADE.
+      await trx.query(
+        `
+        DELETE FROM products
+        WHERE shop_id = ?
+        `,
+        [currentShop.id],
+      );
+
+      // 4. Xóa cứng shop
+      // shop_stats sẽ bị xóa theo vì relation đang ON DELETE CASCADE.
+      await shopRepo.delete({ id: currentShop.id });
     });
   }
 

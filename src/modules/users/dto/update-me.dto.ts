@@ -4,11 +4,12 @@ import {
   IsEnum,
   IsOptional,
   IsString,
-  MinLength,
   MaxLength,
+  MinLength,
   Matches,
   IsUrl,
 } from 'class-validator';
+
 import { Gender } from '../enums/user.enum';
 
 export class UpdateMeDto {
@@ -23,7 +24,9 @@ export class UpdateMeDto {
   email?: string | null;
 
   @IsOptional()
-  @Matches(/^\+?[0-9]{8,15}$/, { message: 'Số điện thoại không hợp lệ' })
+  @Matches(/^\+?[0-9]{8,15}$/, {
+    message: 'Số điện thoại không hợp lệ',
+  })
   phone?: string | null;
 
   @IsOptional()
