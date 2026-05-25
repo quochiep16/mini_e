@@ -11,6 +11,7 @@ import { ProductVariant } from './entities/product-variant.entity';
 import { Shop } from '../../modules/shops/entities/shop.entity';
 import { ShopStats } from '../../modules/shops/entities/shop-stats.entity';
 import { Category } from '../categories/entities/category.entity';
+import { RecommendationsModule } from '../recommendations/recommendations.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { Category } from '../categories/entities/category.entity';
       ShopStats,
       Category,
     ]),
+    RecommendationsModule,
   ],
   controllers: [ProductsController],
   providers: [ProductsService],

@@ -3,7 +3,9 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -29,11 +31,14 @@ import { Shop, ShopStatus } from '../../modules/shops/entities/shop.entity';
 import { ShopStats } from '../../modules/shops/entities/shop-stats.entity';
 import { Category } from '../categories/entities/category.entity';
 import { UserRole } from '../users/enums/user.enum';
+import { RecommendationsService } from '../recommendations/recommendations.service';
 
 type Opt = { name: string; values: string[] };
 
 @Injectable()
 export class ProductsService {
+  private readonly logger = new Logger(ProductsService.name);
+
   constructor(
     private readonly dataSource: DataSource,
 
@@ -54,6 +59,9 @@ export class ProductsService {
 
     @InjectRepository(Category)
     private readonly categoriesRepo: Repository<Category>,
+
+    @Optional()
+    private readonly recommendationsService?: RecommendationsService,
   ) {}
 
   private isUniqueViolation(error: any) {
@@ -419,6 +427,58 @@ export class ProductsService {
     return totalStock;
   }
 
+  private async syncRecommendationTagsForProduct(productId: number): Promise<void> {
+    const service = this.recommendationsService as any;
+
+    if (!service || typeof service.syncProductTags !== 'function') {
+      return;
+    }
+
+    try {
+      const product = await this.productsRepo.findOne({
+        where: { id: productId } as any,
+        withDeleted: true,
+      });
+
+      if (!product) return;
+
+      const [category, variants] = await Promise.all([
+        product.categoryId
+          ? this.categoriesRepo.findOne({
+              where: { id: product.categoryId } as any,
+              withDeleted: true,
+            } as any)
+          : Promise.resolve(null),
+        this.variantsRepo.find({
+          where: { productId } as any,
+          order: { id: 'ASC' },
+        }),
+      ]);
+
+      await service.syncProductTags({
+        id: product.id,
+        title: product.title,
+        description: product.description,
+        category: category ? { name: category.name } : null,
+        optionSchema: product.optionSchema,
+        variants: variants.map((variant) => ({
+          name: variant.name,
+          value1: variant.value1,
+          value2: variant.value2,
+          value3: variant.value3,
+          value4: variant.value4,
+          value5: variant.value5,
+        })),
+      });
+    } catch (error: any) {
+      this.logger.warn(
+        `Không thể đồng bộ product_tags cho product ${productId}: ${
+          error?.message ?? error
+        }`,
+      );
+    }
+  }
+
   async createBySeller(userId: number, dto: CreateProductDto) {
     const shop = await this.shopsRepo.findOne({ where: { userId } });
 
@@ -435,7 +495,7 @@ export class ProductsService {
     const categoryId = await this.resolveCategoryId((dto as any).categoryId);
 
     try {
-      return await this.dataSource.transaction(async (trx) => {
+      const savedProduct = await this.dataSource.transaction(async (trx) => {
         const productRepo = trx.getRepository(Product);
         const imageRepo = trx.getRepository(ProductImage);
         const statsRepo = trx.getRepository(ShopStats);
@@ -485,6 +545,10 @@ export class ProductsService {
 
         return saved;
       });
+
+      await this.syncRecommendationTagsForProduct(savedProduct.id);
+
+      return savedProduct;
     } catch (error) {
       if (this.isUniqueViolation(error)) {
         throw new ConflictException('Slug sản phẩm đã tồn tại');
@@ -785,7 +849,11 @@ export class ProductsService {
     }
 
     try {
-      return await this.productsRepo.save(product);
+      const saved = await this.productsRepo.save(product);
+
+      await this.syncRecommendationTagsForProduct(saved.id);
+
+      return saved;
     } catch (error: any) {
       if (this.isUniqueViolation(error)) {
         throw new ConflictException('Slug sản phẩm đã tồn tại');
@@ -849,7 +917,7 @@ export class ProductsService {
     const mode = dto.mode ?? 'replace';
 
     try {
-      return await this.dataSource.transaction(async (trx) => {
+      const variants = await this.dataSource.transaction(async (trx) => {
         const productRepo = trx.getRepository(Product);
         const variantRepo = trx.getRepository(ProductVariant);
         const imageRepo = trx.getRepository(ProductImage);
@@ -975,6 +1043,10 @@ export class ProductsService {
           order: { id: 'ASC' },
         });
       });
+
+      await this.syncRecommendationTagsForProduct(productId);
+
+      return variants;
     } catch (error) {
       if (this.isUniqueViolation(error)) {
         throw new ConflictException('SKU hoặc tổ hợp biến thể đã tồn tại');
@@ -1067,6 +1139,7 @@ export class ProductsService {
       const saved = await this.variantsRepo.save(variant);
 
       await this.syncProductStockFromVariants(productId);
+      await this.syncRecommendationTagsForProduct(productId);
 
       return saved;
     } catch (error: any) {

@@ -9,9 +9,7 @@ export class InitProductTrending1700000008500 implements MigrationInterface {
         id INT UNSIGNED NOT NULL AUTO_INCREMENT,
         product_id INT UNSIGNED NOT NULL,
 
-        score_24h INT NOT NULL DEFAULT 0,
         score_7d INT NOT NULL DEFAULT 0,
-        score_30d INT NOT NULL DEFAULT 0,
 
         click_count_7d INT NOT NULL DEFAULT 0,
         view_count_7d INT NOT NULL DEFAULT 0,
@@ -19,6 +17,8 @@ export class InitProductTrending1700000008500 implements MigrationInterface {
         favorite_count_7d INT NOT NULL DEFAULT 0,
         purchase_count_7d INT NOT NULL DEFAULT 0,
 
+        trending_rank INT UNSIGNED NULL,
+        trending_bonus INT NOT NULL DEFAULT 0,
         is_trending TINYINT(1) NOT NULL DEFAULT 0,
 
         last_interacted_at DATETIME(6) NULL,
@@ -31,6 +31,8 @@ export class InitProductTrending1700000008500 implements MigrationInterface {
 
         UNIQUE KEY UQ_product_trending_product (product_id),
         KEY IDX_product_trending_score_7d (score_7d),
+        KEY IDX_product_trending_rank (trending_rank),
+        KEY IDX_product_trending_bonus (trending_bonus),
         KEY IDX_product_trending_is_trending_score (is_trending, score_7d),
 
         CONSTRAINT FK_product_trending_product

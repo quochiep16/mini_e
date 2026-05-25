@@ -9,6 +9,8 @@ import {
 @Entity('product_trending')
 @Unique('UQ_product_trending_product', ['productId'])
 @Index('IDX_product_trending_score_7d', ['score7d'])
+@Index('IDX_product_trending_rank', ['trendingRank'])
+@Index('IDX_product_trending_bonus', ['trendingBonus'])
 @Index('IDX_product_trending_is_trending_score', ['isTrending', 'score7d'])
 export class ProductTrending {
   @PrimaryGeneratedColumn({ type: 'int', unsigned: true })
@@ -17,14 +19,8 @@ export class ProductTrending {
   @Column({ name: 'product_id', type: 'int', unsigned: true })
   productId: number;
 
-  @Column({ name: 'score_24h', type: 'int', default: 0 })
-  score24h: number;
-
   @Column({ name: 'score_7d', type: 'int', default: 0 })
   score7d: number;
-
-  @Column({ name: 'score_30d', type: 'int', default: 0 })
-  score30d: number;
 
   @Column({ name: 'click_count_7d', type: 'int', default: 0 })
   clickCount7d: number;
@@ -40,6 +36,17 @@ export class ProductTrending {
 
   @Column({ name: 'purchase_count_7d', type: 'int', default: 0 })
   purchaseCount7d: number;
+
+  @Column({
+    name: 'trending_rank',
+    type: 'int',
+    unsigned: true,
+    nullable: true,
+  })
+  trendingRank: number | null;
+
+  @Column({ name: 'trending_bonus', type: 'int', default: 0 })
+  trendingBonus: number;
 
   @Column({ name: 'is_trending', type: 'tinyint', width: 1, default: 0 })
   isTrending: boolean;
