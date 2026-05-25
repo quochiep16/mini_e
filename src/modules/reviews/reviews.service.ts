@@ -172,52 +172,47 @@ export class ReviewsService {
     const safePage = Math.max(1, page);
     const safeLimit = Math.max(1, Math.min(100, limit));
 
-    const qb = this.reviewRepo
-      .createQueryBuilder('r')
-      .leftJoinAndSelect('r.user', 'u', 'u.deletedAt IS NULL')
-      .where('r.product_id = :productId', { productId })
-      .orderBy('r.created_at', 'DESC')
-      .skip((safePage - 1) * safeLimit)
-      .take(safeLimit)
-      .select([
-        'r.id',
-        'r.orderId',
-        'r.userId',
-        'r.productId',
-        'r.rating',
-        'r.comment',
-        'r.images',
-        'r.createdAt',
-        'r.updatedAt',
-        'u.id',
-        'u.name',
-        'u.avatarUrl',
-      ]);
+    const [rows, total] = await this.reviewRepo.findAndCount({
+      where: { productId },
+      relations: {
+        user: true,
+      },
+      order: {
+        createdAt: 'DESC',
+      },
+      skip: (safePage - 1) * safeLimit,
+      take: safeLimit,
+    });
 
-    const [rows, total] = await qb.getManyAndCount();
+    const items = rows.map((review) => {
+      const displayName =
+        review.userNameSnapshot ?? review.user?.name ?? 'Người dùng đã xóa';
 
-    const items = rows.map((review) => ({
-      id: review.id,
-      orderId: review.orderId,
-      userId: review.userId,
-      productId: review.productId,
-      rating: review.rating,
-      comment: review.comment,
-      images: review.images,
-      createdAt: review.createdAt,
-      updatedAt: review.updatedAt,
-      user: review.user
-        ? {
-            id: review.user.id,
-            name: review.user.name,
-            avatarUrl: review.user.avatarUrl ?? null,
-          }
-        : null,
-    }));
+      const displayAvatarUrl =
+        review.userAvatarSnapshot ?? review.user?.avatarUrl ?? null;
+
+      return {
+        id: review.id,
+        orderId: review.orderId,
+        userId: review.user?.id ?? review.userId ?? null,
+        productId: review.productId,
+        rating: review.rating,
+        comment: review.comment,
+        images: review.images,
+        createdAt: review.createdAt,
+        updatedAt: review.updatedAt,
+        user: {
+          id: review.user?.id ?? review.userId ?? null,
+          name: displayName,
+          avatarUrl: displayAvatarUrl,
+          isDeleted: !review.user,
+        },
+      };
+    });
 
     const raw = await this.reviewRepo
       .createQueryBuilder('r')
-      .select('COUNT(1)', 'count')
+      .select('COUNT(r.id)', 'count')
       .addSelect('AVG(r.rating)', 'avg')
       .where('r.product_id = :productId', { productId })
       .getRawOne();

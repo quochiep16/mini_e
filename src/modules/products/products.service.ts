@@ -19,7 +19,7 @@ import {
 
 import { CreateProductDto } from './dto/create-product.dto';
 import { GenerateVariantsDto } from './dto/generate-variants.dto';
-import { QueryProductsDto } from './dto/query-products.dto';
+import { ProductSort, QueryProductsDto } from './dto/query-products.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { UpdateVariantDto } from './dto/update-variant.dto';
 
@@ -581,43 +581,32 @@ export class ProductsService {
     const limit = Math.min(100, Math.max(1, Number(query.limit ?? 20)));
     const q = (query.q ?? '').trim();
 
-    const publicStatuses = [ProductStatus.ACTIVE, ProductStatus.OUT_OF_STOCK];
-
-    if (query.status && !publicStatuses.includes(query.status)) {
-      return {
-        items: [],
-        page,
-        limit,
-        total: 0,
-      };
-    }
-
     const qb = this.productsRepo
       .createQueryBuilder('p')
       .innerJoin('p.shop', 'shop')
-      .where('shop.status = :shopStatus', { shopStatus: ShopStatus.ACTIVE });
-
-    if (query.status) {
-      qb.andWhere('p.status = :status', { status: query.status });
-    } else {
-      qb.andWhere('p.status IN (:...publicStatuses)', { publicStatuses });
-    }
+      .where('p.status = :productStatus', { productStatus: ProductStatus.ACTIVE })
+      .andWhere('shop.status = :shopStatus', { shopStatus: ShopStatus.ACTIVE });
 
     if (query.shopId) {
       qb.andWhere('p.shopId = :shopId', { shopId: query.shopId });
     }
 
     if (query.categoryId) {
-      qb.andWhere('p.categoryId = :categoryId', {
-        categoryId: query.categoryId,
-      });
+      qb.andWhere('p.categoryId = :categoryId', { categoryId: query.categoryId });
     }
 
     if (q) {
       qb.andWhere('(p.title LIKE :q OR p.slug LIKE :q)', { q: `%${q}%` });
     }
 
-    qb.orderBy('p.createdAt', 'DESC').addOrderBy('p.id', 'DESC');
+    if (query.sort === ProductSort.BEST_SELLING) {
+      qb.orderBy('p.sold', 'DESC')
+        .addOrderBy('p.createdAt', 'DESC')
+        .addOrderBy('p.id', 'DESC');
+    } else {
+      qb.orderBy('p.createdAt', 'DESC').addOrderBy('p.id', 'DESC');
+    }
+
     qb.skip((page - 1) * limit).take(limit);
 
     const [items, total] = await qb.getManyAndCount();

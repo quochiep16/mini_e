@@ -1,6 +1,20 @@
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import {
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+} from 'class-validator';
+
 import { ProductStatus } from '../entities/product.entity';
+
+export enum ProductSort {
+  LATEST = 'latest',
+  BEST_SELLING = 'best_selling',
+}
 
 export class QueryProductsDto {
   @IsOptional()
@@ -35,6 +49,10 @@ export class QueryProductsDto {
   @IsInt({ message: 'categoryId phải là số nguyên' })
   @Min(1, { message: 'categoryId phải ≥ 1' })
   categoryId?: number;
+
+  @IsOptional()
+  @IsIn([ProductSort.LATEST, ProductSort.BEST_SELLING], {
+    message: 'sort không hợp lệ',
+  })
+  sort?: ProductSort;
 }
-
-
