@@ -1,8 +1,10 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { DataSource, EntityManager } from 'typeorm';
 
 import { CreateInteractionDto } from './dto/create-interaction.dto';
@@ -18,8 +20,6 @@ const EVENT_WEIGHTS: Record<InteractionEvent, number> = {
   [InteractionEvent.UNFAVORITE]: -3,
   [InteractionEvent.PURCHASE]: 10,
 };
-
-const TRENDING_THRESHOLD = 20;
 
 type SyncProductTagInput = {
   id: number;
@@ -43,17 +43,150 @@ type SyncProductTagInput = {
 
 @Injectable()
 export class RecommendationsService {
+  private readonly logger = new Logger(RecommendationsService.name);
+
   constructor(
     private readonly dataSource: DataSource,
     private readonly tagExtractorService: TagExtractorService,
   ) {}
 
   /**
+   * Chạy mỗi 30 phút.
+   */
+  @Cron('0 */30 * * * *')
+  async recalculateProductTrendingCron() {
+    try {
+      const result = await this.recalculateProductTrending();
+
+      this.logger.log(
+        `Đã tính lại product_trending: ${result.data.totalTrendingProducts} sản phẩm`,
+      );
+    } catch (error) {
+      this.logger.error('Lỗi khi tính lại product_trending', error);
+    }
+  }
+
+  /**
+   * Tính lại bảng product_trending từ product_interactions trong 7 ngày gần nhất.
+   *
+   * Logic:
+   * - Top 20 sản phẩm: trending_bonus = 2
+   * - Rank 21 - 70: trending_bonus = 1
+   * - Còn lại không được insert vào product_trending
+   *
+   * Lưu ý:
+   * - Không cộng dồn score_7d.
+   * - Mỗi lần chạy là xóa bảng product_trending rồi tính lại từ log.
+   */
+  async recalculateProductTrending() {
+    await this.dataSource.transaction(async (manager) => {
+      await manager.query(`DELETE FROM product_trending`);
+
+      await manager.query(`
+        INSERT INTO product_trending
+          (
+            product_id,
+            score_7d,
+            click_count_7d,
+            view_count_7d,
+            add_to_cart_count_7d,
+            favorite_count_7d,
+            purchase_count_7d,
+            trending_rank,
+            trending_bonus,
+            is_trending,
+            last_interacted_at,
+            last_calculated_at,
+            created_at,
+            updated_at
+          )
+        SELECT
+          ranked.product_id,
+          ranked.score_7d,
+          ranked.click_count_7d,
+          ranked.view_count_7d,
+          ranked.add_to_cart_count_7d,
+          ranked.favorite_count_7d,
+          ranked.purchase_count_7d,
+          ranked.trending_rank,
+
+          CASE
+            WHEN ranked.trending_rank <= 20 THEN 2
+            WHEN ranked.trending_rank <= 70 THEN 1
+            ELSE 0
+          END AS trending_bonus,
+
+          CASE
+            WHEN ranked.trending_rank <= 70 THEN 1
+            ELSE 0
+          END AS is_trending,
+
+          ranked.last_interacted_at,
+          NOW(6),
+          NOW(6),
+          NOW(6)
+
+        FROM (
+          SELECT
+            raw_scores.*,
+            ROW_NUMBER() OVER (
+              ORDER BY
+                raw_scores.score_7d DESC,
+                raw_scores.purchase_count_7d DESC,
+                raw_scores.add_to_cart_count_7d DESC,
+                raw_scores.favorite_count_7d DESC,
+                raw_scores.view_count_7d DESC,
+                raw_scores.last_interacted_at DESC
+            ) AS trending_rank
+
+          FROM (
+            SELECT
+              pi.product_id,
+
+              GREATEST(COALESCE(SUM(pi.weight), 0), 0) AS score_7d,
+
+              SUM(CASE WHEN pi.event_type = 'CLICK' THEN 1 ELSE 0 END) AS click_count_7d,
+              SUM(CASE WHEN pi.event_type = 'VIEW_DETAIL' THEN 1 ELSE 0 END) AS view_count_7d,
+              SUM(CASE WHEN pi.event_type = 'ADD_TO_CART' THEN 1 ELSE 0 END) AS add_to_cart_count_7d,
+              SUM(CASE WHEN pi.event_type = 'FAVORITE' THEN 1 ELSE 0 END) AS favorite_count_7d,
+              SUM(CASE WHEN pi.event_type = 'PURCHASE' THEN 1 ELSE 0 END) AS purchase_count_7d,
+
+              MAX(pi.created_at) AS last_interacted_at
+
+            FROM product_interactions pi
+            INNER JOIN products p
+              ON p.id = pi.product_id
+
+            WHERE pi.created_at >= DATE_SUB(NOW(6), INTERVAL 7 DAY)
+              AND p.deleted_at IS NULL
+              AND p.stock > 0
+              AND p.status = 'ACTIVE'
+
+            GROUP BY pi.product_id
+
+            HAVING score_7d > 0
+          ) raw_scores
+        ) ranked
+
+        WHERE ranked.trending_rank <= 70
+      `);
+    });
+
+    const rows = await this.dataSource.query(`
+      SELECT COUNT(*) AS total
+      FROM product_trending
+    `);
+
+    return {
+      message: 'Đã tính lại bảng product_trending',
+      data: {
+        totalTrendingProducts: Number(rows?.[0]?.total ?? 0),
+      },
+    };
+  }
+
+  /**
    * ProductService sẽ gọi hàm này sau khi tạo/sửa sản phẩm hoặc biến thể.
-   * Nhiệm vụ:
-   * - Tách tag từ title, description, category, optionSchema, variants.
-   * - Xóa tag cũ của product.
-   * - Lưu tag mới vào product_tags.
    */
   async syncProductTags(product: SyncProductTagInput) {
     if (!product?.id) {
@@ -118,9 +251,6 @@ export class RecommendationsService {
     };
   }
 
-  /**
-   * Lấy thông tin sản phẩm bằng SQL trực tiếp để tránh lệch tên field trong ProductEntity.
-   */
   private async findProductForInteraction(productId: number) {
     const rows = await this.dataSource.query(
       `
@@ -147,11 +277,11 @@ export class RecommendationsService {
   }
 
   /**
-   * Ghi nhận hành vi người dùng:
-   * - Lưu product_interactions
-   * - Cộng user_category_preferences
-   * - Cộng user_tag_preferences
-   * - Cập nhật product_trending
+   * Ghi nhận hành vi người dùng.
+   *
+   * Lưu ý:
+   * - Hàm này KHÔNG cộng trực tiếp product_trending nữa.
+   * - product_trending sẽ do cron job tính lại mỗi 30 phút từ product_interactions.
    */
   async recordEvent(userId: number, dto: CreateInteractionDto) {
     if (!userId) {
@@ -202,13 +332,6 @@ export class RecommendationsService {
         dto.productId,
         weight,
       );
-
-      await this.updateProductTrending(
-        manager,
-        dto.productId,
-        dto.eventType,
-        weight,
-      );
     });
 
     return {
@@ -220,6 +343,8 @@ export class RecommendationsService {
         shopId,
         eventType: dto.eventType,
         weight,
+        trendingNote:
+          'product_trending sẽ được cron job tính lại mỗi 30 phút',
       },
     };
   }
@@ -290,95 +415,6 @@ export class RecommendationsService {
     );
   }
 
-  private async updateProductTrending(
-    manager: EntityManager,
-    productId: number,
-    eventType: InteractionEvent,
-    weight: number,
-  ) {
-    if (eventType === InteractionEvent.UNFAVORITE) {
-      await manager.query(
-        `
-        UPDATE product_trending
-        SET
-          score_24h = GREATEST(score_24h + ?, 0),
-          score_7d = GREATEST(score_7d + ?, 0),
-          score_30d = GREATEST(score_30d + ?, 0),
-          favorite_count_7d = GREATEST(favorite_count_7d - 1, 0),
-          is_trending = IF(GREATEST(score_7d + ?, 0) >= ?, 1, 0),
-          last_interacted_at = NOW(6),
-          updated_at = NOW(6)
-        WHERE product_id = ?
-        `,
-        [weight, weight, weight, weight, TRENDING_THRESHOLD, productId],
-      );
-
-      return;
-    }
-
-    const clickCount = eventType === InteractionEvent.CLICK ? 1 : 0;
-    const viewCount = eventType === InteractionEvent.VIEW_DETAIL ? 1 : 0;
-    const addToCartCount = eventType === InteractionEvent.ADD_TO_CART ? 1 : 0;
-    const favoriteCount = eventType === InteractionEvent.FAVORITE ? 1 : 0;
-    const purchaseCount = eventType === InteractionEvent.PURCHASE ? 1 : 0;
-
-    await manager.query(
-      `
-      INSERT INTO product_trending
-        (
-          product_id,
-          score_24h,
-          score_7d,
-          score_30d,
-          click_count_7d,
-          view_count_7d,
-          add_to_cart_count_7d,
-          favorite_count_7d,
-          purchase_count_7d,
-          is_trending,
-          last_interacted_at,
-          last_calculated_at,
-          created_at,
-          updated_at
-        )
-      VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, IF(? >= ?, 1, 0), NOW(6), NOW(6), NOW(6), NOW(6))
-      ON DUPLICATE KEY UPDATE
-        score_24h = GREATEST(score_24h + VALUES(score_24h), 0),
-        score_7d = GREATEST(score_7d + VALUES(score_7d), 0),
-        score_30d = GREATEST(score_30d + VALUES(score_30d), 0),
-
-        click_count_7d = GREATEST(click_count_7d + VALUES(click_count_7d), 0),
-        view_count_7d = GREATEST(view_count_7d + VALUES(view_count_7d), 0),
-        add_to_cart_count_7d = GREATEST(add_to_cart_count_7d + VALUES(add_to_cart_count_7d), 0),
-        favorite_count_7d = GREATEST(favorite_count_7d + VALUES(favorite_count_7d), 0),
-        purchase_count_7d = GREATEST(purchase_count_7d + VALUES(purchase_count_7d), 0),
-
-        is_trending = IF(GREATEST(score_7d + VALUES(score_7d), 0) >= ?, 1, 0),
-        last_interacted_at = NOW(6),
-        last_calculated_at = NOW(6),
-        updated_at = NOW(6)
-      `,
-      [
-        productId,
-        weight,
-        weight,
-        weight,
-        clickCount,
-        viewCount,
-        addToCartCount,
-        favoriteCount,
-        purchaseCount,
-        weight,
-        TRENDING_THRESHOLD,
-        TRENDING_THRESHOLD,
-      ],
-    );
-  }
-
-  /**
-   * Thêm sản phẩm vào danh sách yêu thích.
-   */
   async addFavorite(userId: number, productId: number) {
     if (!userId) {
       throw new BadRequestException('Không xác định được người dùng');
@@ -437,9 +473,6 @@ export class RecommendationsService {
     };
   }
 
-  /**
-   * Bỏ sản phẩm khỏi danh sách yêu thích.
-   */
   async removeFavorite(userId: number, productId: number) {
     if (!userId) {
       throw new BadRequestException('Không xác định được người dùng');
@@ -494,9 +527,6 @@ export class RecommendationsService {
     };
   }
 
-  /**
-   * Lấy danh sách sản phẩm user đã yêu thích.
-   */
   async getFavorites(userId: number, query: RecommendationQueryDto) {
     if (!userId) {
       throw new BadRequestException('Không xác định được người dùng');
@@ -561,13 +591,14 @@ export class RecommendationsService {
   }
 
   /**
-   * Lấy sản phẩm gợi ý cho user.
+   * Recommend mới:
    *
-   * Công thức mới:
-   * - category match: +3 và cộng nhẹ theo score category
-   * - tag match: user_tag_preferences.score * product_tags.weight
-   * - trending true: +2
-   * - product_trending.score_7d: cộng nhẹ
+   * recommendationScore =
+   *   categoryScore
+   * + tagScore
+   * + trendingBonus
+   *
+   * Không cộng score_7d trực tiếp để tránh sản phẩm trend trôi lên quá mạnh.
    */
   async getRecommendedProducts(userId: number, query: RecommendationQueryDto) {
     if (!userId) {
@@ -581,21 +612,22 @@ export class RecommendationsService {
     const preferenceRows = await this.dataSource.query(
       `
       SELECT
-        (
-          EXISTS (
+        CASE
+          WHEN EXISTS (
             SELECT 1
             FROM user_category_preferences
             WHERE user_id = ?
             LIMIT 1
           )
-          OR
-          EXISTS (
+          OR EXISTS (
             SELECT 1
             FROM user_tag_preferences
             WHERE user_id = ?
             LIMIT 1
           )
-        ) AS hasPreference
+          THEN 1
+          ELSE 0
+        END AS hasPreference
       `,
       [userId, userId],
     );
@@ -639,18 +671,14 @@ export class RecommendationsService {
         COALESCE(rs.categoryScore, 0) AS categoryScore,
         COALESCE(rs.tagScore, 0) AS tagScore,
 
-        CASE
-          WHEN ptg.is_trending = 1 THEN 2
-          ELSE 0
-        END AS trendingBonus,
-
-        COALESCE(ptg.score_7d, 0) AS trendingScore,
+        COALESCE(ptg.trending_bonus, 0) AS trendingBonus,
+        COALESCE(ptg.trending_rank, NULL) AS trendingRank,
+        COALESCE(ptg.score_7d, 0) AS trendingScore7d,
 
         (
           COALESCE(rs.categoryScore, 0)
           + COALESCE(rs.tagScore, 0)
-          + CASE WHEN ptg.is_trending = 1 THEN 2 ELSE 0 END
-          + COALESCE(ptg.score_7d, 0) * 0.05
+          + COALESCE(ptg.trending_bonus, 0)
         ) AS recommendationScore
 
       FROM products p
@@ -719,7 +747,7 @@ export class RecommendationsService {
 
       ORDER BY
         recommendationScore DESC,
-        COALESCE(ptg.score_7d, 0) DESC,
+        COALESCE(ptg.trending_rank, 999999) ASC,
         p.sold DESC,
         p.created_at DESC
 
@@ -733,16 +761,17 @@ export class RecommendationsService {
       limit,
       source: hasPreference ? 'personalized' : 'fallback',
       message: hasPreference
-        ? 'Gợi ý dựa trên category, tag, trending và hành vi người dùng'
-        : 'User chưa có dữ liệu sở thích, trả về sản phẩm phổ biến',
+        ? 'Gợi ý dựa trên category, tag và trending bonus cố định'
+        : 'User chưa có dữ liệu sở thích, trả về sản phẩm phổ biến/trending',
+      trendingRule: {
+        top20Bonus: 2,
+        rank21To70Bonus: 1,
+        recalculatedEveryMinutes: 30,
+      },
       items,
     };
   }
 
-  /**
-   * API test preference.
-   * Giữ nguyên tên hàm để controller hiện tại không cần sửa.
-   */
   async getMyCategoryPreferences(userId: number) {
     if (!userId) {
       throw new BadRequestException('Không xác định được người dùng');

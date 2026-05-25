@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ScheduleModule } from '@nestjs/schedule';
 
 import { RecommendationsController } from './recommendations.controller';
 import { RecommendationsService } from './recommendations.service';
@@ -16,6 +17,7 @@ import { User } from '../users/entities/user.entity';
 
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     TypeOrmModule.forFeature([
       User,
 
