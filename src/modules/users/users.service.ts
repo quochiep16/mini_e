@@ -16,6 +16,8 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { QueryUserDto } from './dto/query-user.dto';
+import { EmailService } from '../email/email.service';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 @Injectable()
 export class UsersService {
@@ -23,6 +25,7 @@ export class UsersService {
     @InjectRepository(User) private readonly repo: Repository<User>,
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
+    private readonly emailService: EmailService,
   ) {}
 
   private get ROOT_ADMIN_EMAIL(): string {
@@ -66,6 +69,60 @@ export class UsersService {
     const toHash = pepper ? password + pepper : password;
 
     return bcrypt.hash(toHash, rounds);
+  }
+
+  private async comparePassword(rawPassword: string, passwordHash: string) {
+    const pepper = this.config.get<string>('BCRYPT_PEPPER');
+    const toCompare = pepper ? rawPassword + pepper : rawPassword;
+
+    return bcrypt.compare(toCompare, passwordHash);
+  }
+
+  private generateOtp(length = 6) {
+    let code = '';
+
+    for (let i = 0; i < length; i += 1) {
+      code += Math.floor(Math.random() * 10).toString();
+    }
+
+    return code;
+  }
+
+  private async hashOtp(code: string) {
+    return bcrypt.hash(code, 10);
+  }
+
+  private async compareOtp(rawCode: string, hashedCode: string) {
+    /**
+     * Hỗ trợ cả trường hợp OTP cũ trong DB đang lưu plain text.
+     * Nếu sau này toàn bộ OTP đều hash thì có thể bỏ nhánh rawCode === hashedCode.
+     */
+    if (rawCode === hashedCode) {
+      return true;
+    }
+
+    return bcrypt.compare(rawCode, hashedCode);
+  }
+
+  private isOtpExpired(timeOtp?: Date | null, minutes = 5) {
+    if (!timeOtp) return true;
+
+    const createdAt = new Date(timeOtp).getTime();
+    const expiresAt = createdAt + minutes * 60 * 1000;
+
+    return Date.now() > expiresAt;
+  }
+
+  private maskEmail(email: string) {
+    const [name, domain] = email.split('@');
+
+    if (!name || !domain) return email;
+
+    if (name.length <= 2) {
+      return `${name[0] ?? '*'}***@${domain}`;
+    }
+
+    return `${name.slice(0, 2)}***@${domain}`;
   }
 
   private sanitizeUser<T extends Partial<User>>(user: T | null | undefined) {
@@ -865,5 +922,116 @@ export class UsersService {
     } finally {
       await queryRunner.release();
     }
+  }
+
+  async requestChangePasswordOtp(userId: number) {
+    const user = await this.repo.findOne({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User không tồn tại');
+    }
+
+    if (!user.email) {
+      throw new BadRequestException(
+        'Tài khoản chưa có email nên không thể gửi OTP đổi mật khẩu',
+      );
+    }
+
+    const otp = this.generateOtp(6);
+    const hashedOtp = await this.hashOtp(otp);
+
+    user.otp = hashedOtp;
+    user.timeOtp = new Date();
+
+    await this.repo.save(user);
+
+    await this.emailService.sendChangePasswordCode(user.email, otp);
+
+    return {
+      sent: true,
+      via: 'email',
+      target: this.maskEmail(user.email),
+      expiresInMinutes: 5,
+      message: 'Mã OTP đổi mật khẩu đã được gửi về email của bạn',
+    };
+  }
+
+  async changeMyPassword(userId: number, dto: ChangePasswordDto) {
+    if (dto.newPassword !== dto.confirmNewPassword) {
+      throw new BadRequestException('Mật khẩu xác nhận không khớp');
+    }
+
+    const user = await this.repo.findOne({
+      where: { id: userId },
+      select: [
+        'id',
+        'email',
+        'passwordHash',
+        'otp',
+        'timeOtp',
+        'deletedAt',
+      ] as any,
+    });
+
+    if (!user) {
+      throw new NotFoundException('User không tồn tại');
+    }
+
+    if (!user.passwordHash) {
+      throw new BadRequestException('Tài khoản chưa có mật khẩu');
+    }
+
+    const isCurrentPasswordValid = await this.comparePassword(
+      dto.currentPassword,
+      user.passwordHash,
+    );
+
+    if (!isCurrentPasswordValid) {
+      throw new BadRequestException('Mật khẩu hiện tại không đúng');
+    }
+
+    const isSamePassword = await this.comparePassword(
+      dto.newPassword,
+      user.passwordHash,
+    );
+
+    if (isSamePassword) {
+      throw new BadRequestException(
+        'Mật khẩu mới không được trùng với mật khẩu hiện tại',
+      );
+    }
+
+    if (!user.otp || !user.timeOtp) {
+      throw new BadRequestException(
+        'Vui lòng yêu cầu gửi OTP trước khi đổi mật khẩu',
+      );
+    }
+
+    if (this.isOtpExpired(user.timeOtp, 5)) {
+      user.otp = null as any;
+      user.timeOtp = null as any;
+      await this.repo.save(user);
+
+      throw new BadRequestException('OTP đã hết hạn, vui lòng yêu cầu mã mới');
+    }
+
+    const isOtpValid = await this.compareOtp(dto.otp, user.otp);
+
+    if (!isOtpValid) {
+      throw new BadRequestException('OTP không đúng');
+    }
+
+    user.passwordHash = await this.hashPassword(dto.newPassword);
+    user.otp = null as any;
+    user.timeOtp = null as any;
+
+    await this.repo.save(user);
+
+    return {
+      changed: true,
+      message: 'Đổi mật khẩu thành công',
+    };
   }
 }

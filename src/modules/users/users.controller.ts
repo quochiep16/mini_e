@@ -19,6 +19,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { QueryUserDto } from './dto/query-user.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 import { Roles } from '../../common/decorators/roles.decorator';
 import { AppRole } from '../../common/constants/roles';
@@ -46,6 +47,40 @@ export class UsersController {
     @Res() res: Response,
   ) {
     const result = await this.usersService.updateMe(Number(userId), dto);
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      statusCode: HttpStatus.OK,
+      data: result,
+    });
+  }
+
+  @Post('me/change-password/request-otp')
+  async requestChangePasswordOtp(
+    @CurrentUser('id') userId: number,
+    @Res() res: Response,
+  ) {
+    const result = await this.usersService.requestChangePasswordOtp(
+      Number(userId),
+    );
+
+    return res.status(HttpStatus.OK).json({
+      success: true,
+      statusCode: HttpStatus.OK,
+      data: result,
+    });
+  }
+
+  @Patch('me/change-password')
+  async changeMyPassword(
+    @CurrentUser('id') userId: number,
+    @Body() dto: ChangePasswordDto,
+    @Res() res: Response,
+  ) {
+    const result = await this.usersService.changeMyPassword(
+      Number(userId),
+      dto,
+    );
 
     return res.status(HttpStatus.OK).json({
       success: true,
