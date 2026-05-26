@@ -12,7 +12,7 @@ export class InitProductTags1700000008300 implements MigrationInterface {
         tag VARCHAR(120) NOT NULL,
         tag_norm VARCHAR(160) NOT NULL,
 
-        weight INT NOT NULL DEFAULT 1,
+        weight DECIMAL(6,2) NOT NULL DEFAULT 1.00,
         sources JSON NULL,
 
         created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),

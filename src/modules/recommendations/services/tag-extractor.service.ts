@@ -1,6 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { TAG_DICTIONARY } from '../dictionaries/tag_dictionary_1500_entries';
 
+type TagDictionaryItem = {
+  readonly categoryGroup: string;
+  readonly keyword: string;
+  readonly tag: string;
+  readonly type: string;
+  readonly weight: number;
+};
+
 export type ExtractProductTagInput = {
   title?: string | null;
   description?: string | null;
@@ -32,45 +40,52 @@ export class TagExtractorService {
       {
         source: 'category',
         text: input.categoryName ?? '',
-        sourceBoost: 5,
+        sourceWeight: 1,
       },
       {
         source: 'title',
         text: input.title ?? '',
-        sourceBoost: 4,
+        sourceWeight: 1,
       },
       {
         source: 'option',
         text: this.stringifyOptionSchema(input.optionSchema),
-        sourceBoost: 3,
+        sourceWeight: 0.8,
       },
       {
         source: 'variant',
         text: this.stringifyVariants(input.variants ?? []),
-        sourceBoost: 2,
+        sourceWeight: 0.8,
       },
+
+      // Tạm thời không lấy tag từ description để tránh tag nhiễu.
+      // Sau này nếu muốn dùng mô tả thì chỉ nên cho sourceWeight = 0.2
+      // và lọc whitelist tag quan trọng.
       {
         source: 'description',
         text: input.description ?? '',
-        sourceBoost: 1,
+        sourceWeight: 0,
       },
     ];
 
     const resultMap = new Map<string, ExtractedProductTag>();
 
-    for (const item of TAG_DICTIONARY) {
+    for (const item of TAG_DICTIONARY as readonly TagDictionaryItem[]) {
       const keywordNorm = this.normalizeText(item.keyword);
 
       if (!keywordNorm) continue;
 
       for (const sourceText of sourceTexts) {
+        if (sourceText.sourceWeight <= 0) continue;
+
         const textNorm = this.normalizeText(sourceText.text);
 
         if (!textNorm) continue;
         if (!this.containsKeyword(textNorm, keywordNorm)) continue;
 
         const tagNorm = this.normalizeTag(item.tag);
-        const addedWeight = Number(item.weight ?? 1) + sourceText.sourceBoost;
+        const dictionaryWeight = this.clamp(Number(item.weight ?? 1), 1, 3);
+        const addedWeight = dictionaryWeight * sourceText.sourceWeight;
 
         const existed = resultMap.get(tagNorm);
 
@@ -93,7 +108,12 @@ export class TagExtractorService {
       }
     }
 
-    return Array.from(resultMap.values()).sort((a, b) => b.weight - a.weight);
+    return Array.from(resultMap.values())
+      .map((item) => ({
+        ...item,
+        weight: Number(Math.min(item.weight, 10).toFixed(2)),
+      }))
+      .sort((a, b) => b.weight - a.weight);
   }
 
   normalizeText(value: unknown): string {
@@ -160,5 +180,10 @@ export class TagExtractorService {
       ])
       .filter(Boolean)
       .join(' ');
+  }
+
+  private clamp(value: number, min: number, max: number): number {
+    if (Number.isNaN(value)) return min;
+    return Math.max(min, Math.min(value, max));
   }
 }

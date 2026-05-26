@@ -23,7 +23,17 @@ export class ProductTag {
   @Column({ name: 'tag_norm', type: 'varchar', length: 160 })
   tagNorm: string;
 
-  @Column({ name: 'weight', type: 'int', default: 1 })
+  @Column({
+    name: 'weight',
+    type: 'decimal',
+    precision: 6,
+    scale: 2,
+    default: 1,
+    transformer: {
+      to: (value: number) => value,
+      from: (value: string | number) => Number(value),
+    },
+  })
   weight: number;
 
   @Column({ name: 'sources', type: 'json', nullable: true })

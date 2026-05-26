@@ -11,6 +11,7 @@ import { ProductInteraction } from './entities/product-interaction.entity';
 import { UserCategoryPreference } from './entities/user-category-preference.entity';
 import { ProductTag } from './entities/product-tag.entity';
 import { UserTagPreference } from './entities/user-tag-preference.entity';
+import { UserProductPreference } from './entities/user-product-preference.entity';
 import { ProductTrending } from './entities/product-trending.entity';
 
 import { User } from '../users/entities/user.entity';
@@ -27,6 +28,7 @@ import { User } from '../users/entities/user.entity';
 
       ProductTag,
       UserTagPreference,
+      UserProductPreference,
       ProductTrending,
     ]),
   ],

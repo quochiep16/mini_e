@@ -13,13 +13,24 @@ import { InteractionEvent } from './enums/interaction-event.enum';
 import { TagExtractorService } from './services/tag-extractor.service';
 
 const EVENT_WEIGHTS: Record<InteractionEvent, number> = {
-  [InteractionEvent.CLICK]: 1,
+  [InteractionEvent.CLICK]: 0,
   [InteractionEvent.VIEW_DETAIL]: 2,
-  [InteractionEvent.ADD_TO_CART]: 5,
-  [InteractionEvent.FAVORITE]: 7,
+  [InteractionEvent.ADD_TO_CART]: 3,
+  [InteractionEvent.FAVORITE]: 4,
   [InteractionEvent.UNFAVORITE]: -3,
-  [InteractionEvent.PURCHASE]: 10,
+  [InteractionEvent.PURCHASE]: 4,
 };
+
+const PRODUCT_SCORE_MAX = 40;
+const CATEGORY_SCORE_MAX = 8;
+const TAG_SCORE_MAX = 80;
+const TAG_SCORE_LOG_MULTIPLIER = 15;
+const TRENDING_TOP_BONUS = 2;
+const TRENDING_NORMAL_BONUS = 1;
+
+// Sau mỗi 10 ngày không tương tác thì effective score còn 95%.
+const DECAY_BASE = 0.95;
+const DECAY_DAYS = 10;
 
 type SyncProductTagInput = {
   id: number;
@@ -50,9 +61,6 @@ export class RecommendationsService {
     private readonly tagExtractorService: TagExtractorService,
   ) {}
 
-  /**
-   * Chạy mỗi 30 phút.
-   */
   @Cron('0 */30 * * * *')
   async recalculateProductTrendingCron() {
     try {
@@ -66,18 +74,6 @@ export class RecommendationsService {
     }
   }
 
-  /**
-   * Tính lại bảng product_trending từ product_interactions trong 7 ngày gần nhất.
-   *
-   * Logic:
-   * - Top 20 sản phẩm: trending_bonus = 2
-   * - Rank 21 - 70: trending_bonus = 1
-   * - Còn lại không được insert vào product_trending
-   *
-   * Lưu ý:
-   * - Không cộng dồn score_7d.
-   * - Mỗi lần chạy là xóa bảng product_trending rồi tính lại từ log.
-   */
   async recalculateProductTrending() {
     await this.dataSource.transaction(async (manager) => {
       await manager.query(`DELETE FROM product_trending`);
@@ -111,8 +107,8 @@ export class RecommendationsService {
           ranked.trending_rank,
 
           CASE
-            WHEN ranked.trending_rank <= 20 THEN 2
-            WHEN ranked.trending_rank <= 70 THEN 1
+            WHEN ranked.trending_rank <= 20 THEN ${TRENDING_TOP_BONUS}
+            WHEN ranked.trending_rank <= 70 THEN ${TRENDING_NORMAL_BONUS}
             ELSE 0
           END AS trending_bonus,
 
@@ -185,9 +181,6 @@ export class RecommendationsService {
     };
   }
 
-  /**
-   * ProductService sẽ gọi hàm này sau khi tạo/sửa sản phẩm hoặc biến thể.
-   */
   async syncProductTags(product: SyncProductTagInput) {
     if (!product?.id) {
       return {
@@ -273,16 +266,9 @@ export class RecommendationsService {
   }
 
   private getWeight(eventType: InteractionEvent): number {
-    return EVENT_WEIGHTS[eventType] ?? 1;
+    return EVENT_WEIGHTS[eventType] ?? 0;
   }
 
-  /**
-   * Ghi nhận hành vi người dùng.
-   *
-   * Lưu ý:
-   * - Hàm này KHÔNG cộng trực tiếp product_trending nữa.
-   * - product_trending sẽ do cron job tính lại mỗi 30 phút từ product_interactions.
-   */
   async recordEvent(userId: number, dto: CreateInteractionDto) {
     if (!userId) {
       throw new BadRequestException('Không xác định được người dùng');
@@ -317,7 +303,7 @@ export class RecommendationsService {
         ],
       );
 
-      if (categoryId) {
+      if (weight !== 0 && categoryId) {
         await this.increaseUserCategoryPreference(
           manager,
           userId,
@@ -326,12 +312,23 @@ export class RecommendationsService {
         );
       }
 
-      await this.increaseUserTagPreferences(
-        manager,
-        userId,
-        dto.productId,
-        weight,
-      );
+      if (weight !== 0) {
+        await this.increaseUserTagPreferences(
+          manager,
+          userId,
+          dto.productId,
+          weight,
+        );
+      }
+
+      if (weight !== 0) {
+        await this.increaseUserProductPreference(
+          manager,
+          userId,
+          dto.productId,
+          weight,
+        );
+      }
     });
 
     return {
@@ -343,6 +340,8 @@ export class RecommendationsService {
         shopId,
         eventType: dto.eventType,
         weight,
+        note:
+          'CLICK hiện đang để weight = 0. Nên FE chỉ gửi VIEW_DETAIL khi vào trang chi tiết sản phẩm.',
         trendingNote:
           'product_trending sẽ được cron job tính lại mỗi 30 phút',
       },
@@ -379,26 +378,47 @@ export class RecommendationsService {
     const productTags = await manager.query(
       `
       SELECT
-        tag_norm AS tagNorm,
-        weight
-      FROM product_tags
-      WHERE product_id = ?
+        pt.tag_norm AS tagNorm,
+        pt.weight AS productTagWeight,
+        COALESCE(tpc.productCount, 1) AS productCount,
+        1 / LOG10(COALESCE(tpc.productCount, 1) + 10) AS rarityFactor
+      FROM product_tags pt
+      LEFT JOIN (
+        SELECT
+          tag_norm,
+          COUNT(DISTINCT product_id) AS productCount
+        FROM product_tags
+        GROUP BY tag_norm
+      ) tpc
+        ON tpc.tag_norm = pt.tag_norm
+      WHERE pt.product_id = ?
       `,
       [productId],
     );
 
     if (!productTags.length) return;
 
-    const valuesSql = productTags
+    const values: Array<[number, string, number]> = [];
+
+    for (const item of productTags) {
+      const productTagWeight = Number(item.productTagWeight ?? 1);
+      const rarityFactor = Number(item.rarityFactor ?? 1);
+      const scoreDelta = Number(
+        (eventWeight * productTagWeight * rarityFactor).toFixed(2),
+      );
+
+      if (scoreDelta === 0) continue;
+
+      values.push([userId, item.tagNorm, scoreDelta]);
+    }
+
+    if (!values.length) return;
+
+    const valuesSql = values
       .map(() => `(?, ?, ?, NOW(6), NOW(6), NOW(6))`)
       .join(', ');
 
-    const params = productTags.flatMap((item: any) => {
-      const tagWeight = Number(item.weight ?? 1);
-      const scoreDelta = eventWeight * tagWeight;
-
-      return [userId, item.tagNorm, scoreDelta];
-    });
+    const params = values.flatMap((item) => item);
 
     await manager.query(
       `
@@ -412,6 +432,27 @@ export class RecommendationsService {
         updated_at = NOW(6)
       `,
       params,
+    );
+  }
+
+  private async increaseUserProductPreference(
+    manager: EntityManager,
+    userId: number,
+    productId: number,
+    weight: number,
+  ) {
+    await manager.query(
+      `
+      INSERT INTO user_product_preferences
+        (user_id, product_id, score, last_interacted_at, created_at, updated_at)
+      VALUES
+        (?, ?, ?, NOW(6), NOW(6), NOW(6))
+      ON DUPLICATE KEY UPDATE
+        score = GREATEST(score + VALUES(score), 0),
+        last_interacted_at = NOW(6),
+        updated_at = NOW(6)
+      `,
+      [userId, productId, weight],
     );
   }
 
@@ -590,16 +631,6 @@ export class RecommendationsService {
     };
   }
 
-  /**
-   * Recommend mới:
-   *
-   * recommendationScore =
-   *   categoryScore
-   * + tagScore
-   * + trendingBonus
-   *
-   * Không cộng score_7d trực tiếp để tránh sản phẩm trend trôi lên quá mạnh.
-   */
   async getRecommendedProducts(userId: number, query: RecommendationQueryDto) {
     if (!userId) {
       throw new BadRequestException('Không xác định được người dùng');
@@ -625,11 +656,17 @@ export class RecommendationsService {
             WHERE user_id = ?
             LIMIT 1
           )
+          OR EXISTS (
+            SELECT 1
+            FROM user_product_preferences
+            WHERE user_id = ?
+            LIMIT 1
+          )
           THEN 1
           ELSE 0
         END AS hasPreference
       `,
-      [userId, userId],
+      [userId, userId, userId],
     );
 
     const hasPreference = Number(preferenceRows?.[0]?.hasPreference ?? 0) === 1;
@@ -668,63 +705,147 @@ export class RecommendationsService {
           ELSE 1
         END AS isFavorite,
 
+        LEAST(
+          COALESCE(upp.score, 0)
+          *
+          POW(
+            ${DECAY_BASE},
+            GREATEST(
+              TIMESTAMPDIFF(
+                DAY,
+                COALESCE(upp.last_interacted_at, upp.updated_at, NOW(6)),
+                NOW(6)
+              ),
+              0
+            ) / ${DECAY_DAYS}
+          ),
+          ${PRODUCT_SCORE_MAX}
+        ) AS productScore,
+
         COALESCE(rs.categoryScore, 0) AS categoryScore,
         COALESCE(rs.tagScore, 0) AS tagScore,
 
         COALESCE(ptg.trending_bonus, 0) AS trendingBonus,
-        COALESCE(ptg.trending_rank, NULL) AS trendingRank,
+        ptg.trending_rank AS trendingRank,
         COALESCE(ptg.score_7d, 0) AS trendingScore7d,
 
         (
-          COALESCE(rs.categoryScore, 0)
+          LEAST(
+            COALESCE(upp.score, 0)
+            *
+            POW(
+              ${DECAY_BASE},
+              GREATEST(
+                TIMESTAMPDIFF(
+                  DAY,
+                  COALESCE(upp.last_interacted_at, upp.updated_at, NOW(6)),
+                  NOW(6)
+                ),
+                0
+              ) / ${DECAY_DAYS}
+            ),
+            ${PRODUCT_SCORE_MAX}
+          )
+          + COALESCE(rs.categoryScore, 0)
           + COALESCE(rs.tagScore, 0)
           + COALESCE(ptg.trending_bonus, 0)
         ) AS recommendationScore
 
       FROM products p
 
+      LEFT JOIN user_product_preferences upp
+        ON upp.user_id = ?
+        AND upp.product_id = p.id
+
       LEFT JOIN (
         SELECT
-          p2.id AS productId,
+          base.productId,
+          base.categoryScore,
+          base.rawTagScore,
+          LEAST(LOG10(base.rawTagScore + 1) * ${TAG_SCORE_LOG_MULTIPLIER}, ${TAG_SCORE_MAX}) AS tagScore
 
-          MAX(
-            CASE
-              WHEN ucp.id IS NULL THEN 0
-              ELSE 3 + LEAST(ucp.score, 50) * 0.1
-            END
-          ) AS categoryScore,
+        FROM (
+          SELECT
+            p2.id AS productId,
 
-          LEAST(
+            MAX(
+              CASE
+                WHEN ucp.id IS NULL THEN 0
+                ELSE 3 + LEAST(
+                  COALESCE(ucp.score, 0)
+                  *
+                  POW(
+                    ${DECAY_BASE},
+                    GREATEST(
+                      TIMESTAMPDIFF(
+                        DAY,
+                        COALESCE(ucp.last_interacted_at, ucp.updated_at, NOW(6)),
+                        NOW(6)
+                      ),
+                      0
+                    ) / ${DECAY_DAYS}
+                  ),
+                  50
+                ) * 0.1
+              END
+            ) AS categoryScore,
+
             COALESCE(
               SUM(
                 CASE
                   WHEN utp.id IS NULL THEN 0
-                  ELSE LEAST(utp.score, 100) * LEAST(product_tags.weight, 10)
+                  ELSE
+                    LEAST(
+                      COALESCE(utp.score, 0)
+                      *
+                      POW(
+                        ${DECAY_BASE},
+                        GREATEST(
+                          TIMESTAMPDIFF(
+                            DAY,
+                            COALESCE(utp.last_interacted_at, utp.updated_at, NOW(6)),
+                            NOW(6)
+                          ),
+                          0
+                        ) / ${DECAY_DAYS}
+                      ),
+                      100
+                    )
+                    * LEAST(pt.weight, 10)
+                    * (1 / LOG10(COALESCE(tpc.productCount, 1) + 10))
                 END
               ),
               0
-            ) * 0.02,
-            80
-          ) AS tagScore
+            ) AS rawTagScore
 
-        FROM products p2
+          FROM products p2
 
-        LEFT JOIN user_category_preferences ucp
-          ON ucp.user_id = ?
-          AND ucp.category_id = p2.category_id
+          LEFT JOIN user_category_preferences ucp
+            ON ucp.user_id = ?
+            AND ucp.category_id = p2.category_id
 
-        LEFT JOIN product_tags
-          ON product_tags.product_id = p2.id
+          LEFT JOIN product_tags pt
+            ON pt.product_id = p2.id
 
-        LEFT JOIN user_tag_preferences utp
-          ON utp.user_id = ?
-          AND utp.tag_norm = product_tags.tag_norm
+          LEFT JOIN (
+            SELECT
+              tag_norm,
+              COUNT(DISTINCT product_id) AS productCount
+            FROM product_tags
+            GROUP BY tag_norm
+          ) tpc
+            ON tpc.tag_norm = pt.tag_norm
 
-        WHERE p2.deleted_at IS NULL
-          AND p2.stock > 0
-          AND p2.status = 'ACTIVE'
+          LEFT JOIN user_tag_preferences utp
+            ON utp.user_id = ?
+            AND utp.tag_norm = pt.tag_norm
 
-        GROUP BY p2.id
+          WHERE p2.deleted_at IS NULL
+            AND p2.stock > 0
+            AND p2.status = 'ACTIVE'
+
+          GROUP BY p2.id
+        ) base
       ) rs
         ON rs.productId = p.id
 
@@ -753,22 +874,321 @@ export class RecommendationsService {
 
       LIMIT ? OFFSET ?
       `,
-      [userId, userId, userId, limit, offset],
+      [userId, userId, userId, userId, limit, offset],
     );
 
     return {
       page,
       limit,
       source: hasPreference ? 'personalized' : 'fallback',
-      message: hasPreference
-        ? 'Gợi ý dựa trên category, tag và trending bonus cố định'
-        : 'User chưa có dữ liệu sở thích, trả về sản phẩm phổ biến/trending',
-      trendingRule: {
-        top20Bonus: 2,
-        rank21To70Bonus: 1,
-        recalculatedEveryMinutes: 30,
-      },
+      // message: hasPreference
+      //   ? 'Gợi ý dựa trên productScore, categoryScore, tagScore và trendingBonus'
+      //   : 'User chưa có dữ liệu sở thích, trả về sản phẩm phổ biến/trending',
+      // formula: {
+      //   recommendationScore:
+      //     'productScore + categoryScore + tagScore + trendingBonus',
+      //   productScore: `min(effective_user_product_score, ${PRODUCT_SCORE_MAX})`,
+      //   categoryScore:
+      //     '3 + min(effective_user_category_score, 50) * 0.1, max 8',
+      //   rawTagScore:
+      //     'sum(min(effective_user_tag_score, 100) * min(product_tag_weight, 10) * rarityFactor)',
+      //   tagScore: `min(log10(rawTagScore + 1) * ${TAG_SCORE_LOG_MULTIPLIER}, ${TAG_SCORE_MAX})`,
+      //   decay: `effectiveScore = score * ${DECAY_BASE}^(daysSinceLastInteraction / ${DECAY_DAYS})`,
+      //   trendingBonus: 'Top 20 = 2, rank 21-70 = 1',
+      // },
       items,
+    };
+  }
+
+  async getRecommendationProductScores(
+    userId: number,
+    query: RecommendationQueryDto,
+  ) {
+    if (!userId) {
+      throw new BadRequestException('Không xác định được người dùng');
+    }
+
+    const page = Number(query.page ?? 1);
+    const limit = Number(query.limit ?? 50);
+    const offset = (page - 1) * limit;
+
+    const rows = await this.dataSource.query(
+      `
+      SELECT
+        ROW_NUMBER() OVER (
+          ORDER BY
+            scored.recommendationScore DESC,
+            scored.trendingRankSort ASC,
+            scored.sold DESC,
+            scored.createdAt DESC
+        ) AS displayRank,
+
+        scored.productId,
+        scored.title,
+        scored.categoryId,
+        scored.categoryName,
+        scored.shopId,
+        scored.shopName,
+        scored.sold,
+        scored.stock,
+        scored.status,
+
+        scored.productRawScore,
+        scored.productScore,
+        scored.categoryRawScore,
+        scored.categoryScore,
+        scored.rawTagScore,
+        scored.tagScore,
+        scored.trendingBonus,
+        scored.trendingRank,
+        scored.trendingScore7d,
+
+        scored.recommendationScore,
+
+        scored.matchedTagCount,
+        scored.matchedTags,
+
+        scored.createdAt
+
+      FROM (
+        SELECT
+          p.id AS productId,
+          p.title,
+          p.category_id AS categoryId,
+          c.name AS categoryName,
+          p.shop_id AS shopId,
+          s.name AS shopName,
+          p.sold,
+          p.stock,
+          p.status,
+          p.created_at AS createdAt,
+
+          COALESCE(upp.score, 0) AS productRawScore,
+
+          LEAST(
+            COALESCE(upp.score, 0)
+            *
+            POW(
+              ${DECAY_BASE},
+              GREATEST(
+                TIMESTAMPDIFF(
+                  DAY,
+                  COALESCE(upp.last_interacted_at, upp.updated_at, NOW(6)),
+                  NOW(6)
+                ),
+                0
+              ) / ${DECAY_DAYS}
+            ),
+            ${PRODUCT_SCORE_MAX}
+          ) AS productScore,
+
+          COALESCE(rs.categoryRawScore, 0) AS categoryRawScore,
+          COALESCE(rs.categoryScore, 0) AS categoryScore,
+          COALESCE(rs.rawTagScore, 0) AS rawTagScore,
+          COALESCE(rs.tagScore, 0) AS tagScore,
+
+          COALESCE(ptg.trending_bonus, 0) AS trendingBonus,
+          ptg.trending_rank AS trendingRank,
+          COALESCE(ptg.trending_rank, 999999) AS trendingRankSort,
+          COALESCE(ptg.score_7d, 0) AS trendingScore7d,
+
+          (
+            LEAST(
+              COALESCE(upp.score, 0)
+              *
+              POW(
+                ${DECAY_BASE},
+                GREATEST(
+                  TIMESTAMPDIFF(
+                    DAY,
+                    COALESCE(upp.last_interacted_at, upp.updated_at, NOW(6)),
+                    NOW(6)
+                  ),
+                  0
+                ) / ${DECAY_DAYS}
+              ),
+              ${PRODUCT_SCORE_MAX}
+            )
+            + COALESCE(rs.categoryScore, 0)
+            + COALESCE(rs.tagScore, 0)
+            + COALESCE(ptg.trending_bonus, 0)
+          ) AS recommendationScore,
+
+          COALESCE(rs.matchedTagCount, 0) AS matchedTagCount,
+          COALESCE(rs.matchedTags, '') AS matchedTags
+
+        FROM products p
+
+        LEFT JOIN user_product_preferences upp
+          ON upp.user_id = ?
+          AND upp.product_id = p.id
+
+        LEFT JOIN (
+          SELECT
+            base.productId,
+            base.categoryRawScore,
+            base.categoryScore,
+            base.rawTagScore,
+            LEAST(LOG10(base.rawTagScore + 1) * ${TAG_SCORE_LOG_MULTIPLIER}, ${TAG_SCORE_MAX}) AS tagScore,
+            base.matchedTagCount,
+            base.matchedTags
+
+          FROM (
+            SELECT
+              p2.id AS productId,
+
+              MAX(COALESCE(ucp.score, 0)) AS categoryRawScore,
+
+              MAX(
+                CASE
+                  WHEN ucp.id IS NULL THEN 0
+                  ELSE 3 + LEAST(
+                    COALESCE(ucp.score, 0)
+                    *
+                    POW(
+                      ${DECAY_BASE},
+                      GREATEST(
+                        TIMESTAMPDIFF(
+                          DAY,
+                          COALESCE(ucp.last_interacted_at, ucp.updated_at, NOW(6)),
+                          NOW(6)
+                        ),
+                        0
+                      ) / ${DECAY_DAYS}
+                    ),
+                    50
+                  ) * 0.1
+                END
+              ) AS categoryScore,
+
+              COALESCE(
+                SUM(
+                  CASE
+                    WHEN utp.id IS NULL THEN 0
+                    ELSE
+                      LEAST(
+                        COALESCE(utp.score, 0)
+                        *
+                        POW(
+                          ${DECAY_BASE},
+                          GREATEST(
+                            TIMESTAMPDIFF(
+                              DAY,
+                              COALESCE(utp.last_interacted_at, utp.updated_at, NOW(6)),
+                              NOW(6)
+                            ),
+                            0
+                          ) / ${DECAY_DAYS}
+                        ),
+                        100
+                      )
+                      * LEAST(pt.weight, 10)
+                      * (1 / LOG10(COALESCE(tpc.productCount, 1) + 10))
+                  END
+                ),
+                0
+              ) AS rawTagScore,
+
+              COUNT(
+                DISTINCT CASE
+                  WHEN utp.id IS NULL THEN NULL
+                  ELSE pt.tag_norm
+                END
+              ) AS matchedTagCount,
+
+              GROUP_CONCAT(
+                DISTINCT CASE
+                  WHEN utp.id IS NULL THEN NULL
+                  ELSE CONCAT(
+                    pt.tag_norm,
+                    ': userRawScore=',
+                    utp.score,
+                    ', productWeight=',
+                    pt.weight,
+                    ', productCount=',
+                    COALESCE(tpc.productCount, 1),
+                    ', rarity=',
+                    ROUND(1 / LOG10(COALESCE(tpc.productCount, 1) + 10), 4)
+                  )
+                END
+                ORDER BY pt.tag_norm ASC
+                SEPARATOR ' | '
+              ) AS matchedTags
+
+            FROM products p2
+
+            LEFT JOIN user_category_preferences ucp
+              ON ucp.user_id = ?
+              AND ucp.category_id = p2.category_id
+
+            LEFT JOIN product_tags pt
+              ON pt.product_id = p2.id
+
+            LEFT JOIN (
+              SELECT
+                tag_norm,
+                COUNT(DISTINCT product_id) AS productCount
+              FROM product_tags
+              GROUP BY tag_norm
+            ) tpc
+              ON tpc.tag_norm = pt.tag_norm
+
+            LEFT JOIN user_tag_preferences utp
+              ON utp.user_id = ?
+              AND utp.tag_norm = pt.tag_norm
+
+            WHERE p2.deleted_at IS NULL
+              AND p2.stock > 0
+              AND p2.status = 'ACTIVE'
+
+            GROUP BY p2.id
+          ) base
+        ) rs
+          ON rs.productId = p.id
+
+        LEFT JOIN product_trending ptg
+          ON ptg.product_id = p.id
+
+        LEFT JOIN shops s
+          ON s.id = p.shop_id
+
+        LEFT JOIN categories c
+          ON c.id = p.category_id
+
+        WHERE p.deleted_at IS NULL
+          AND p.stock > 0
+          AND p.status = 'ACTIVE'
+      ) scored
+
+      ORDER BY
+        scored.recommendationScore DESC,
+        scored.trendingRankSort ASC,
+        scored.sold DESC,
+        scored.createdAt DESC
+
+      LIMIT ? OFFSET ?
+      `,
+      [userId, userId, userId, limit, offset],
+    );
+
+    return {
+      page,
+      limit,
+      userId,
+      // formula: {
+      //   recommendationScore:
+      //     'productScore + categoryScore + tagScore + trendingBonus',
+      //   productScore: `min(effective_user_product_score, ${PRODUCT_SCORE_MAX})`,
+      //   categoryScore:
+      //     'Nếu match category: 3 + min(effective_user_category_score, 50) * 0.1',
+      //   rawTagScore:
+      //     'sum(min(effective_user_tag_score, 100) * min(product_tag_weight, 10) * rarityFactor)',
+      //   tagScore: `min(log10(rawTagScore + 1) * ${TAG_SCORE_LOG_MULTIPLIER}, ${TAG_SCORE_MAX})`,
+      //   decay: `effectiveScore = score * ${DECAY_BASE}^(daysSinceLastInteraction / ${DECAY_DAYS})`,
+      //   trendingBonus:
+      //     'Top 20 trending = 2, rank 21-70 = 1, còn lại = 0',
+      // },
+      items: rows,
     };
   }
 
@@ -817,10 +1237,32 @@ export class RecommendationsService {
       [userId],
     );
 
+    const productPreferences = await this.dataSource.query(
+      `
+      SELECT
+        upp.id,
+        upp.user_id AS userId,
+        upp.product_id AS productId,
+        p.title AS productTitle,
+        upp.score,
+        upp.last_interacted_at AS lastInteractedAt,
+        upp.created_at AS createdAt,
+        upp.updated_at AS updatedAt
+      FROM user_product_preferences upp
+      INNER JOIN products p
+        ON p.id = upp.product_id
+      WHERE upp.user_id = ?
+      ORDER BY upp.score DESC, upp.last_interacted_at DESC
+      LIMIT 100
+      `,
+      [userId],
+    );
+
     return {
       items: categoryPreferences,
       categoryPreferences,
       tagPreferences,
+      productPreferences,
     };
   }
 }

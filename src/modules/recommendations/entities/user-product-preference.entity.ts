@@ -6,31 +6,21 @@ import {
   Unique,
 } from 'typeorm';
 
-@Entity('user_tag_preferences')
-@Unique('UQ_user_tag_preferences_user_tag', ['userId', 'tagNorm'])
-@Index('IDX_user_tag_preferences_user_score', ['userId', 'score'])
-@Index('IDX_user_tag_preferences_tag_norm', ['tagNorm'])
-export class UserTagPreference {
+@Entity('user_product_preferences')
+@Unique('UQ_user_product_preferences_user_product', ['userId', 'productId'])
+@Index('IDX_user_product_preferences_user_score', ['userId', 'score'])
+@Index('IDX_user_product_preferences_product', ['productId'])
+export class UserProductPreference {
   @PrimaryGeneratedColumn({ type: 'int', unsigned: true })
   id: number;
 
   @Column({ name: 'user_id', type: 'int', unsigned: true })
   userId: number;
 
-  @Column({ name: 'tag_norm', type: 'varchar', length: 160 })
-  tagNorm: string;
+  @Column({ name: 'product_id', type: 'int', unsigned: true })
+  productId: number;
 
-  @Column({
-    name: 'score',
-    type: 'decimal',
-    precision: 12,
-    scale: 2,
-    default: 0,
-    transformer: {
-      to: (value: number) => value,
-      from: (value: string | number) => Number(value),
-    },
-  })
+  @Column({ name: 'score', type: 'int', default: 0 })
   score: number;
 
   @Column({

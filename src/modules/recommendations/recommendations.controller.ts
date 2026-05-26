@@ -24,10 +24,6 @@ export class RecommendationsController {
     private readonly recommendationsService: RecommendationsService,
   ) {}
 
-  /**
-   * Lấy user id từ payload JWT.
-   * Tùy project, payload có thể là id, userId hoặc sub.
-   */
   private getUserId(user: any): number {
     const id = user?.id ?? user?.userId ?? user?.sub;
 
@@ -38,12 +34,6 @@ export class RecommendationsController {
     return Number(id);
   }
 
-  /**
-   * Ghi nhận hành vi:
-   * CLICK, VIEW_DETAIL, ADD_TO_CART, PURCHASE...
-   *
-   * POST /recommendations/events
-   */
   @Post('events')
   recordEvent(
     @CurrentUser() user: any,
@@ -53,11 +43,6 @@ export class RecommendationsController {
     return this.recommendationsService.recordEvent(userId, dto);
   }
 
-  /**
-   * Lấy sản phẩm gợi ý cho trang home.
-   *
-   * GET /recommendations/products?page=1&limit=20
-   */
   @Get('products')
   getRecommendedProducts(
     @CurrentUser() user: any,
@@ -67,11 +52,18 @@ export class RecommendationsController {
     return this.recommendationsService.getRecommendedProducts(userId, query);
   }
 
-  /**
-   * Thêm sản phẩm vào yêu thích.
-   *
-   * POST /recommendations/favorites/:productId
-   */
+  @Get('debug/product-scores')
+  getRecommendationProductScores(
+    @CurrentUser() user: any,
+    @Query() query: RecommendationQueryDto,
+  ) {
+    const userId = this.getUserId(user);
+    return this.recommendationsService.getRecommendationProductScores(
+      userId,
+      query,
+    );
+  }
+
   @Post('favorites/:productId')
   addFavorite(
     @CurrentUser() user: any,
@@ -81,11 +73,6 @@ export class RecommendationsController {
     return this.recommendationsService.addFavorite(userId, productId);
   }
 
-  /**
-   * Bỏ sản phẩm khỏi yêu thích.
-   *
-   * DELETE /recommendations/favorites/:productId
-   */
   @Delete('favorites/:productId')
   removeFavorite(
     @CurrentUser() user: any,
@@ -95,11 +82,6 @@ export class RecommendationsController {
     return this.recommendationsService.removeFavorite(userId, productId);
   }
 
-  /**
-   * Lấy danh sách sản phẩm user đã yêu thích.
-   *
-   * GET /recommendations/favorites?page=1&limit=20
-   */
   @Get('favorites')
   getFavorites(
     @CurrentUser() user: any,
@@ -109,13 +91,8 @@ export class RecommendationsController {
     return this.recommendationsService.getFavorites(userId, query);
   }
 
-  /**
-   * Xem điểm sở thích category của user.
-   * API này dùng để test.
-   *
-   * GET /recommendations/preferences
-   */
   @Get('preferences')
+  @Get('me/preferences')
   getMyCategoryPreferences(@CurrentUser() user: any) {
     const userId = this.getUserId(user);
     return this.recommendationsService.getMyCategoryPreferences(userId);
