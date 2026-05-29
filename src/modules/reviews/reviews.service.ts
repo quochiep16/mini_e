@@ -5,7 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
+
 import { ProductReview } from './entities/product-review.entity';
 import { CreateReviewDto } from './dto/create-review.dto';
 import {
@@ -15,9 +16,32 @@ import {
 } from '../orders/entities/order.entity';
 import { OrderItem } from '../orders/entities/order-item.entity';
 
+type ReviewRow = {
+  id: string;
+  orderId: string;
+  userId: number | null;
+  userNameSnapshot?: string | null;
+  userAvatarSnapshot?: string | null;
+
+  productId: number;
+  rating: number;
+  comment: string | null;
+  images: any;
+
+  createdAt: Date | string;
+  updatedAt: Date | string;
+
+  productTitle?: string | null;
+  productSlug?: string | null;
+
+  userName?: string | null;
+};
+
 @Injectable()
 export class ReviewsService {
   constructor(
+    private readonly dataSource: DataSource,
+
     @InjectRepository(ProductReview)
     private readonly reviewRepo: Repository<ProductReview>,
 
@@ -27,6 +51,193 @@ export class ReviewsService {
     @InjectRepository(OrderItem)
     private readonly itemRepo: Repository<OrderItem>,
   ) {}
+
+  private normalizePageLimit(page = 1, limit = 20) {
+    const safePage = Math.max(1, Number(page) || 1);
+    const safeLimit = Math.max(1, Math.min(100, Number(limit) || 20));
+
+    return {
+      page: safePage,
+      limit: safeLimit,
+      offset: (safePage - 1) * safeLimit,
+    };
+  }
+
+  private parseImages(images: any): string[] | null {
+    if (!images) return null;
+
+    if (Array.isArray(images)) {
+      const arr = images
+        .map((url) => String(url || '').trim())
+        .filter(Boolean);
+
+      return arr.length ? arr : null;
+    }
+
+    if (typeof images === 'string') {
+      const trimmed = images.trim();
+
+      if (!trimmed) return null;
+
+      try {
+        const parsed = JSON.parse(trimmed);
+
+        if (Array.isArray(parsed)) {
+          const arr = parsed
+            .map((url) => String(url || '').trim())
+            .filter(Boolean);
+
+          return arr.length ? arr : null;
+        }
+      } catch {
+        return [trimmed];
+      }
+
+      return [trimmed];
+    }
+
+    return null;
+  }
+
+  private buildRatingSql(rating?: number) {
+    if (!rating) {
+      return {
+        sql: '',
+        params: [] as any[],
+      };
+    }
+
+    return {
+      sql: ' AND pr.rating = ? ',
+      params: [rating] as any[],
+    };
+  }
+
+  private mapReviewRow(row: ReviewRow) {
+    const userName =
+      row.userNameSnapshot || row.userName || 'Người dùng Mochi';
+
+    return {
+      id: row.id,
+      orderId: row.orderId,
+      userId: row.userId ?? null,
+
+      userNameSnapshot: row.userNameSnapshot ?? null,
+      userAvatarSnapshot: row.userAvatarSnapshot ?? null,
+
+      productId: Number(row.productId),
+      rating: Number(row.rating),
+      comment: row.comment ?? null,
+      images: this.parseImages(row.images),
+
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+
+      product: {
+        id: Number(row.productId),
+        title: row.productTitle || `Sản phẩm #${row.productId}`,
+        slug: row.productSlug ?? null,
+      },
+
+      user: {
+        id: row.userId ?? null,
+        name: userName,
+        avatarUrl: row.userAvatarSnapshot ?? null,
+        isDeleted: !row.userId,
+      },
+    };
+  }
+
+  private async getUserNameSnapshot(userId: number) {
+    const rows = await this.dataSource.query(
+      `
+      SELECT name
+      FROM users
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [userId],
+    );
+
+    return rows?.[0]?.name ?? null;
+  }
+
+  private async getShopIdByOwnerId(userId: number) {
+    const rows = await this.dataSource.query(
+      `
+      SELECT id
+      FROM shops
+      WHERE user_id = ?
+      LIMIT 1
+      `,
+      [userId],
+    );
+
+    const shopId = Number(rows?.[0]?.id ?? 0);
+
+    if (!shopId) {
+      throw new NotFoundException('Bạn chưa có shop.');
+    }
+
+    return shopId;
+  }
+
+  private async getShopIdByProductId(productId: number) {
+    const rows = await this.dataSource.query(
+      `
+      SELECT shop_id AS shopId
+      FROM products
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [productId],
+    );
+
+    const shopId = Number(rows?.[0]?.shopId ?? 0);
+    return shopId > 0 ? shopId : null;
+  }
+
+  private async recalculateShopRatingByProductId(productId: number) {
+    const shopId = await this.getShopIdByProductId(productId);
+
+    if (!shopId) return;
+
+    await this.recalculateShopRating(shopId);
+  }
+
+  private async recalculateShopRating(shopId: number) {
+    const raw = await this.dataSource.query(
+      `
+      SELECT
+        COUNT(pr.id) AS reviewCount,
+        COALESCE(ROUND(AVG(pr.rating), 2), 0) AS ratingAvg
+      FROM product_reviews pr
+      INNER JOIN products p ON p.id = pr.product_id
+      WHERE p.shop_id = ?
+      `,
+      [shopId],
+    );
+
+    const reviewCount = Number(raw?.[0]?.reviewCount ?? 0);
+    const ratingAvg = Number(raw?.[0]?.ratingAvg ?? 0);
+
+    await this.dataSource.query(
+      `
+      UPDATE shop_stats
+      SET
+        review_count = ?,
+        rating_avg = ?,
+        updated_at = NOW()
+      WHERE shop_id = ?
+      `,
+      [reviewCount, ratingAvg, shopId],
+    );
+
+    return {
+      reviewCount,
+      ratingAvg,
+    };
+  }
 
   async createForOrder(userId: number, orderId: string, dto: CreateReviewDto) {
     const order = await this.orderRepo.findOne({
@@ -51,13 +262,6 @@ export class ReviewsService {
       );
     }
 
-    /**
-     * Với flow order hiện tại:
-     * - Shop giao hàng: shippingStatus = DELIVERED
-     * - User xác nhận nhận hàng: status = COMPLETED
-     *
-     * Nên review chỉ mở sau khi user xác nhận nhận hàng.
-     */
     const canReview =
       order.status === OrderStatus.COMPLETED &&
       order.shippingStatus === ShippingStatus.DELIVERED;
@@ -78,11 +282,6 @@ export class ReviewsService {
 
     let productId = dto.productId;
 
-    /**
-     * Tương thích API cũ:
-     * Nếu FE cũ chưa gửi productId mà order chỉ có đúng 1 product
-     * thì tự lấy productId đó.
-     */
     const uniqueProductIds = Array.from(
       new Set(items.map((item) => item.productId)),
     );
@@ -126,6 +325,8 @@ export class ReviewsService {
         ?.filter((url) => typeof url === 'string' && url.trim())
         .map((url) => url.trim()) ?? [];
 
+    const userNameSnapshot = await this.getUserNameSnapshot(userId);
+
     const review = this.reviewRepo.create({
       orderId,
       userId,
@@ -133,9 +334,16 @@ export class ReviewsService {
       rating: dto.rating,
       comment,
       images: images.length ? images : null,
-    });
 
-    return this.reviewRepo.save(review);
+      userNameSnapshot,
+      userAvatarSnapshot: null,
+    } as any);
+
+    const saved = await this.reviewRepo.save(review);
+
+    await this.recalculateShopRatingByProductId(productId);
+
+    return saved;
   }
 
   async getByOrder(userId: number, orderId: string, productId?: number) {
@@ -169,155 +377,186 @@ export class ReviewsService {
   }
 
   async listByProduct(productId: number, page = 1, limit = 20) {
-    const safePage = Math.max(1, page);
-    const safeLimit = Math.max(1, Math.min(100, limit));
+    const safeProductId = Number(productId);
 
-    const [rows, total] = await this.reviewRepo.findAndCount({
-      where: { productId },
-      relations: {
-        user: true,
-      },
-      order: {
-        createdAt: 'DESC',
-      },
-      skip: (safePage - 1) * safeLimit,
-      take: safeLimit,
-    });
+    if (!Number.isInteger(safeProductId) || safeProductId <= 0) {
+      throw new BadRequestException('productId không hợp lệ');
+    }
 
-    const items = rows.map((review) => {
-      const displayName =
-        review.userNameSnapshot ?? review.user?.name ?? 'Người dùng đã xóa';
+    const { page: safePage, limit: safeLimit, offset } =
+      this.normalizePageLimit(page, limit);
 
-      const displayAvatarUrl =
-        review.userAvatarSnapshot ?? review.user?.avatarUrl ?? null;
+    const itemsRaw = await this.dataSource.query(
+      `
+      SELECT
+        pr.id AS id,
+        pr.order_id AS orderId,
+        pr.user_id AS userId,
+        pr.user_name_snapshot AS userNameSnapshot,
+        pr.user_avatar_snapshot AS userAvatarSnapshot,
+        pr.product_id AS productId,
+        pr.rating AS rating,
+        pr.comment AS comment,
+        pr.images AS images,
+        pr.created_at AS createdAt,
+        pr.updated_at AS updatedAt,
 
-      return {
-        id: review.id,
-        orderId: review.orderId,
-        userId: review.user?.id ?? review.userId ?? null,
-        productId: review.productId,
-        rating: review.rating,
-        comment: review.comment,
-        images: review.images,
-        createdAt: review.createdAt,
-        updatedAt: review.updatedAt,
-        user: {
-          id: review.user?.id ?? review.userId ?? null,
-          name: displayName,
-          avatarUrl: displayAvatarUrl,
-          isDeleted: !review.user,
-        },
-      };
-    });
+        p.title AS productTitle,
+        p.slug AS productSlug,
 
-    const raw = await this.reviewRepo
-      .createQueryBuilder('r')
-      .select('COUNT(r.id)', 'count')
-      .addSelect('AVG(r.rating)', 'avg')
-      .where('r.product_id = :productId', { productId })
-      .getRawOne();
+        u.name AS userName
+      FROM product_reviews pr
+      INNER JOIN products p ON p.id = pr.product_id
+      LEFT JOIN users u ON u.id = pr.user_id
+      WHERE pr.product_id = ?
+      ORDER BY pr.created_at DESC
+      LIMIT ? OFFSET ?
+      `,
+      [safeProductId, safeLimit, offset],
+    );
 
-    const count = Number(raw?.count ?? 0);
-    const avg = raw?.avg != null ? Number(raw.avg) : 0;
+    const totalRaw = await this.dataSource.query(
+      `
+      SELECT COUNT(pr.id) AS total
+      FROM product_reviews pr
+      WHERE pr.product_id = ?
+      `,
+      [safeProductId],
+    );
+
+    const summaryRaw = await this.dataSource.query(
+      `
+      SELECT
+        COUNT(pr.id) AS count,
+        COALESCE(ROUND(AVG(pr.rating), 2), 0) AS avg
+      FROM product_reviews pr
+      WHERE pr.product_id = ?
+      `,
+      [safeProductId],
+    );
 
     return {
       summary: {
-        count,
-        avg: Number(avg.toFixed(2)),
+        count: Number(summaryRaw?.[0]?.count ?? 0),
+        avg: Number(summaryRaw?.[0]?.avg ?? 0),
       },
-      items,
+      items: (itemsRaw as ReviewRow[]).map((row) => this.mapReviewRow(row)),
       page: safePage,
       limit: safeLimit,
-      total,
+      total: Number(totalRaw?.[0]?.total ?? 0),
     };
   }
 
-  async listByShop(shopId: number, page = 1, limit = 20) {
-    const safePage = Math.max(1, page);
-    const safeLimit = Math.max(1, Math.min(100, limit));
+  /**
+   * Shop đang đăng nhập xem review của shop mình.
+   *
+   * GET /api/reviews/shop/me
+   */
+  async listByMyShop(
+    userId: number,
+    page = 1,
+    limit = 20,
+    rating?: number,
+  ) {
+    if (!userId) {
+      throw new ForbiddenException('Không xác định được user từ token.');
+    }
 
-    /**
-     * product_reviews -> products
-     * Lọc tất cả review của các product thuộc shop_id này.
-     */
-    const qb = this.reviewRepo
-      .createQueryBuilder('r')
-      .innerJoinAndSelect('r.product', 'p')
-      .leftJoinAndSelect('r.user', 'u', 'u.deletedAt IS NULL')
-      .where('p.shop_id = :shopId', { shopId })
-      .orderBy('r.created_at', 'DESC')
-      .skip((safePage - 1) * safeLimit)
-      .take(safeLimit)
-      .select([
-        'r.id',
-        'r.orderId',
-        'r.userId',
-        'r.productId',
-        'r.rating',
-        'r.comment',
-        'r.images',
-        'r.createdAt',
-        'r.updatedAt',
+    const shopId = await this.getShopIdByOwnerId(userId);
 
-        'p.id',
-        'p.title',
-        'p.slug',
+    return this.listByShop(shopId, page, limit, rating);
+  }
 
-        'u.id',
-        'u.name',
-        'u.avatarUrl',
-      ]);
+  /**
+   * User/public xem review của shop theo shopId.
+   *
+   * GET /api/reviews/shop/:shopId
+   */
+  async listByShop(
+    shopId: number,
+    page = 1,
+    limit = 20,
+    rating?: number,
+  ) {
+    const safeShopId = Number(shopId);
 
-    const [rows, total] = await qb.getManyAndCount();
+    if (!Number.isInteger(safeShopId) || safeShopId <= 0) {
+      throw new BadRequestException('shopId không hợp lệ');
+    }
 
-    const items = rows.map((review) => ({
-      id: review.id,
-      orderId: review.orderId,
-      userId: review.userId,
-      productId: review.productId,
-      rating: review.rating,
-      comment: review.comment,
-      images: review.images,
-      createdAt: review.createdAt,
-      updatedAt: review.updatedAt,
+    const { page: safePage, limit: safeLimit, offset } =
+      this.normalizePageLimit(page, limit);
 
-      product: review.product
-        ? {
-            id: review.product.id,
-            title: review.product.title,
-            slug: review.product.slug,
-          }
-        : null,
+    const ratingFilter = this.buildRatingSql(rating);
 
-      user: review.user
-        ? {
-            id: review.user.id,
-            name: review.user.name,
-            avatarUrl: review.user.avatarUrl ?? null,
-          }
-        : null,
-    }));
+    const itemsRaw = await this.dataSource.query(
+      `
+      SELECT
+        pr.id AS id,
+        pr.order_id AS orderId,
+        pr.user_id AS userId,
+        pr.user_name_snapshot AS userNameSnapshot,
+        pr.user_avatar_snapshot AS userAvatarSnapshot,
+        pr.product_id AS productId,
+        pr.rating AS rating,
+        pr.comment AS comment,
+        pr.images AS images,
+        pr.created_at AS createdAt,
+        pr.updated_at AS updatedAt,
 
-    const raw = await this.reviewRepo
-      .createQueryBuilder('r')
-      .innerJoin('r.product', 'p')
-      .select('COUNT(1)', 'count')
-      .addSelect('AVG(r.rating)', 'avg')
-      .where('p.shop_id = :shopId', { shopId })
-      .getRawOne();
+        p.title AS productTitle,
+        p.slug AS productSlug,
 
-    const count = Number(raw?.count ?? 0);
-    const avg = raw?.avg != null ? Number(raw.avg) : 0;
+        u.name AS userName
+      FROM product_reviews pr
+      INNER JOIN products p ON p.id = pr.product_id
+      LEFT JOIN users u ON u.id = pr.user_id
+      WHERE p.shop_id = ?
+      ${ratingFilter.sql}
+      ORDER BY pr.created_at DESC
+      LIMIT ? OFFSET ?
+      `,
+      [safeShopId, ...ratingFilter.params, safeLimit, offset],
+    );
+
+    const totalRaw = await this.dataSource.query(
+      `
+      SELECT COUNT(pr.id) AS total
+      FROM product_reviews pr
+      INNER JOIN products p ON p.id = pr.product_id
+      WHERE p.shop_id = ?
+      ${ratingFilter.sql}
+      `,
+      [safeShopId, ...ratingFilter.params],
+    );
+
+    const summaryRaw = await this.dataSource.query(
+      `
+      SELECT
+        COUNT(pr.id) AS reviewCount,
+        COALESCE(ROUND(AVG(pr.rating), 2), 0) AS ratingAvg
+      FROM product_reviews pr
+      INNER JOIN products p ON p.id = pr.product_id
+      WHERE p.shop_id = ?
+      `,
+      [safeShopId],
+    );
+
+    const ratingAvg = Number(summaryRaw?.[0]?.ratingAvg ?? 0);
+    const reviewCount = Number(summaryRaw?.[0]?.reviewCount ?? 0);
 
     return {
       summary: {
-        count,
-        avg: Number(avg.toFixed(2)),
+        ratingAvg,
+        reviewCount,
+
+        avg: ratingAvg,
+        count: reviewCount,
       },
-      items,
+      items: (itemsRaw as ReviewRow[]).map((row) => this.mapReviewRow(row)),
       page: safePage,
       limit: safeLimit,
-      total,
+      total: Number(totalRaw?.[0]?.total ?? 0),
     };
   }
 }

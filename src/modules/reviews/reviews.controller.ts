@@ -9,8 +9,10 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+
 import { ReviewsService } from './reviews.service';
 import {
   CreateReviewByOrderDto,
@@ -26,6 +28,20 @@ function parseOptionalPositiveInt(value?: string): number | undefined {
 
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new BadRequestException('productId không hợp lệ');
+  }
+
+  return parsed;
+}
+
+function parseOptionalRating(value?: string): number | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 5) {
+    throw new BadRequestException('rating phải từ 1 đến 5');
   }
 
   return parsed;
@@ -83,10 +99,36 @@ export class ReviewsController {
   }
 
   /**
-   * Lấy tất cả review của tất cả sản phẩm thuộc 1 shop.
+   * Shop đang đăng nhập xem review của shop mình.
    *
-   * API:
-   * GET /reviews/shop/:shopId?page=1&limit=20
+   * GET /api/reviews/shop/me?page=1&limit=20&rating=5
+   *
+   * Lưu ý: route /me phải đặt TRƯỚC /:shopId
+   */
+  @Get('reviews/shop/me')
+  async listMyShopReviews(
+    @CurrentUser('sub') userId: number,
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Query('rating') rating?: string,
+  ) {
+    const parsed = parsePageLimit(page, limit);
+    const parsedRating = parseOptionalRating(rating);
+
+    const data = await this.service.listByMyShop(
+      Number(userId),
+      parsed.page,
+      parsed.limit,
+      parsedRating,
+    );
+
+    return { success: true, data };
+  }
+
+  /**
+   * User/public xem review của shop theo shopId.
+   *
+   * GET /api/reviews/shop/:shopId?page=1&limit=20&rating=5
    */
   @Public()
   @Get('reviews/shop/:shopId')
@@ -94,13 +136,16 @@ export class ReviewsController {
     @Param('shopId', ParseIntPipe) shopId: number,
     @Query('page') page = '1',
     @Query('limit') limit = '20',
+    @Query('rating') rating?: string,
   ) {
     const parsed = parsePageLimit(page, limit);
+    const parsedRating = parseOptionalRating(rating);
 
     const data = await this.service.listByShop(
       shopId,
       parsed.page,
       parsed.limit,
+      parsedRating,
     );
 
     return { success: true, data };

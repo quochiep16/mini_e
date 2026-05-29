@@ -20,6 +20,8 @@ import { UserRole } from '../users/enums/user.enum';
 import {
   Order,
   OrderStatus,
+  PaymentMethod,
+  PaymentStatus,
   ShippingStatus,
 } from '../../modules/orders/entities/order.entity';
 
@@ -27,10 +29,18 @@ import {
 export class ShopsService {
   constructor(
     private readonly dataSource: DataSource,
-    @InjectRepository(Shop) private readonly shopsRepo: Repository<Shop>,
-    @InjectRepository(ShopStats) private readonly statsRepo: Repository<ShopStats>,
-    @InjectRepository(User) private readonly usersRepo: Repository<User>,
-    @InjectRepository(Order) private readonly ordersRepo: Repository<Order>,
+
+    @InjectRepository(Shop)
+    private readonly shopsRepo: Repository<Shop>,
+
+    @InjectRepository(ShopStats)
+    private readonly statsRepo: Repository<ShopStats>,
+
+    @InjectRepository(User)
+    private readonly usersRepo: Repository<User>,
+
+    @InjectRepository(Order)
+    private readonly ordersRepo: Repository<Order>,
   ) {}
 
   // ---------------- common utils ----------------
@@ -54,12 +64,11 @@ export class ShopsService {
       const found = await this.shopsRepo.findOne({
         where: ignoreId ? { slug, id: Not(ignoreId) } : { slug },
         select: { id: true },
-        // Slug vẫn bị unique dù shop đã xóa mềm,
-        // nên cần kiểm tra cả shop đã deleted_at.
         withDeleted: true,
       });
 
       if (!found) return slug;
+
       slug = `${this.slugify(base)}-${i++}`;
     }
   }
@@ -79,18 +88,25 @@ export class ShopsService {
   }
 
   private toFixedOrNull(v?: number, digits = 7): string | null {
-    return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : null;
+    return typeof v === 'number' && Number.isFinite(v)
+      ? v.toFixed(digits)
+      : null;
   }
 
   private normalizeOptionalText(value?: string | null): string | null {
     if (value === undefined || value === null) return null;
+
     const trimmed = String(value).trim();
     return trimmed ? trimmed : null;
   }
 
   private async getShopOrThrow(id: number) {
     const shop = await this.shopsRepo.findOne({ where: { id } });
-    if (!shop) throw new NotFoundException('Không tìm thấy shop.');
+
+    if (!shop) {
+      throw new NotFoundException('Không tìm thấy shop.');
+    }
+
     return shop;
   }
 
@@ -119,6 +135,7 @@ export class ShopsService {
 
     if (!includeRevenue) {
       const { totalRevenue, ...statsPublic } = stats || {};
+
       return {
         ...plainShop,
         stats: statsPublic,
@@ -129,6 +146,7 @@ export class ShopsService {
     }
 
     const totalRevenue = Number(stats?.totalRevenue ?? 0);
+
     return {
       ...plainShop,
       stats,
@@ -144,11 +162,13 @@ export class ShopsService {
     shop: Shop,
     nextStatus: ShopStatus,
   ) {
-    // Shop đã xóa mềm sẽ không còn userId.
     if (!shop.userId) return;
 
     const userRepo = trx.getRepository(User);
-    const owner = await userRepo.findOne({ where: { id: shop.userId } });
+
+    const owner = await userRepo.findOne({
+      where: { id: shop.userId },
+    });
 
     if (!owner) return;
 
@@ -163,7 +183,6 @@ export class ShopsService {
       return;
     }
 
-    // PENDING hoặc SUSPENDED thì chưa được bán.
     shop.verifiedAt = null;
 
     if (owner.role === UserRole.SELLER) {
@@ -174,15 +193,44 @@ export class ShopsService {
 
   // ---------------- shop order management ----------------
 
+  private async syncCodPaymentPaidForDeliveredOrders(orderIds: string[]) {
+    if (!orderIds.length) return;
+
+    await this.ordersRepo.update(
+      {
+        id: In(orderIds),
+        paymentMethod: PaymentMethod.COD,
+        paymentStatus: PaymentStatus.UNPAID,
+        shippingStatus: ShippingStatus.DELIVERED,
+      } as any,
+      {
+        paymentStatus: PaymentStatus.PAID,
+      } as any,
+    );
+  }
+
+  private shouldMarkCodPaid(order: Order) {
+    return (
+      String(order.paymentMethod).toUpperCase() === PaymentMethod.COD &&
+      order.paymentStatus === PaymentStatus.UNPAID &&
+      (order.shippingStatus === ShippingStatus.DELIVERED ||
+        order.status === OrderStatus.COMPLETED)
+    );
+  }
+
   async listMyShopOrders(userId: number, page = 1, limit = 20) {
-    if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
+    if (!userId) {
+      throw new ForbiddenException('Không xác định được user từ token.');
+    }
 
     const shop = await this.shopsRepo.findOne({
       where: { userId },
       select: { id: true } as any,
     });
 
-    if (!shop) throw new NotFoundException('Bạn chưa có shop.');
+    if (!shop) {
+      throw new NotFoundException('Bạn chưa có shop.');
+    }
 
     const shopId = Number((shop as any).id);
 
@@ -214,8 +262,15 @@ export class ShopsService {
     const total = Number(totalRow?.cnt || 0);
 
     if (!ids.length) {
-      return { items: [], page, limit, total };
+      return {
+        items: [],
+        page,
+        limit,
+        total,
+      };
     }
+
+    await this.syncCodPaymentPaidForDeliveredOrders(ids);
 
     const orders = await this.ordersRepo.find({
       where: { id: In(ids) } as any,
@@ -225,7 +280,12 @@ export class ShopsService {
     const map = new Map(orders.map((o) => [o.id, o]));
     const ordered = ids.map((id) => map.get(id)).filter(Boolean);
 
-    return { items: ordered, page, limit, total };
+    return {
+      items: ordered,
+      page,
+      limit,
+      total,
+    };
   }
 
   private async getMyShopIdOrThrow(userId: number): Promise<number> {
@@ -234,7 +294,10 @@ export class ShopsService {
       select: { id: true } as any,
     });
 
-    if (!shop) throw new NotFoundException('Bạn chưa có shop.');
+    if (!shop) {
+      throw new NotFoundException('Bạn chưa có shop.');
+    }
+
     return Number((shop as any).id);
   }
 
@@ -256,24 +319,31 @@ export class ShopsService {
   }
 
   async getMyShopOrderDetail(userId: number, orderId: string) {
-    if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
+    if (!userId) {
+      throw new ForbiddenException('Không xác định được user từ token.');
+    }
 
     const shopId = await this.getMyShopIdOrThrow(userId);
+
     await this.assertOrderBelongsToShop(orderId, shopId);
+    await this.syncCodPaymentPaidForDeliveredOrders([orderId]);
 
     const order = await this.ordersRepo.findOne({
       where: { id: orderId } as any,
       relations: { items: true } as any,
     });
 
-    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng.');
+    if (!order) {
+      throw new NotFoundException('Không tìm thấy đơn hàng.');
+    }
+
     return order;
   }
 
   private isValidNextShipping(prev: ShippingStatus, next: ShippingStatus) {
     const allow: Record<string, ShippingStatus[]> = {
       PENDING: [ShippingStatus.PICKED, ShippingStatus.CANCELED],
-      PICKED: [ShippingStatus.IN_TRANSIT, ShippingStatus.CANCELED],
+      PICKED: [ShippingStatus.IN_TRANSIT],
       IN_TRANSIT: [],
       DELIVERED: [],
       RETURNED: [],
@@ -288,27 +358,36 @@ export class ShopsService {
     orderId: string,
     shippingStatus: ShippingStatus,
   ) {
-    if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
+    if (!userId) {
+      throw new ForbiddenException('Không xác định được user từ token.');
+    }
 
     const shopId = await this.getMyShopIdOrThrow(userId);
+
     await this.assertOrderBelongsToShop(orderId, shopId);
 
     const order = await this.ordersRepo.findOne({
       where: { id: orderId } as any,
     });
 
-    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng.');
+    if (!order) {
+      throw new NotFoundException('Không tìm thấy đơn hàng.');
+    }
 
     if (
       order.status === OrderStatus.CANCELLED ||
       order.status === OrderStatus.COMPLETED
     ) {
-      throw new BadRequestException('Đơn hàng đã kết thúc, không thể cập nhật trạng thái.');
+      throw new BadRequestException(
+        'Đơn hàng đã kết thúc, không thể cập nhật trạng thái.',
+      );
     }
 
     const prev = order.shippingStatus as ShippingStatus;
 
-    if (prev === shippingStatus) return order;
+    if (prev === shippingStatus) {
+      return order;
+    }
 
     if (!this.isValidNextShipping(prev, shippingStatus)) {
       throw new BadRequestException(
@@ -322,8 +401,14 @@ export class ShopsService {
       order.status = OrderStatus.PROCESSING;
     } else if (shippingStatus === ShippingStatus.IN_TRANSIT) {
       order.status = OrderStatus.SHIPPED;
+    } else if (shippingStatus === ShippingStatus.DELIVERED) {
+      order.status = OrderStatus.COMPLETED;
     } else if (shippingStatus === ShippingStatus.CANCELED) {
       order.status = OrderStatus.CANCELLED;
+    }
+
+    if (this.shouldMarkCodPaid(order)) {
+      order.paymentStatus = PaymentStatus.PAID;
     }
 
     return this.ordersRepo.save(order as any);
@@ -332,12 +417,18 @@ export class ShopsService {
   // ---------------- shop register / read / update / delete ----------------
 
   async registerForUser(userId: number, dto: CreateShopDto) {
-    if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
+    if (!userId) {
+      throw new ForbiddenException('Không xác định được user từ token.');
+    }
 
-    const existed = await this.shopsRepo.findOne({ where: { userId } });
+    const existed = await this.shopsRepo.findOne({
+      where: { userId },
+    });
 
     if (existed) {
-      throw new ConflictException('Bạn đã có shop và đang chờ duyệt hoặc đã được tạo trước đó.');
+      throw new ConflictException(
+        'Bạn đã có shop và đang chờ duyệt hoặc đã được tạo trước đó.',
+      );
     }
 
     const cleanName = String(dto.name || '').trim();
@@ -350,9 +441,13 @@ export class ShopsService {
       throw new ConflictException('Tên shop đã tồn tại.');
     }
 
-    const user = await this.usersRepo.findOne({ where: { id: userId } });
+    const user = await this.usersRepo.findOne({
+      where: { id: userId },
+    });
 
-    if (!user) throw new NotFoundException('Không tìm thấy user.');
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy user.');
+    }
 
     const slug = await this.ensureUniqueSlug(cleanName);
 
@@ -388,8 +483,6 @@ export class ShopsService {
 
       shop.stats = await statsRepo.save(stats);
 
-      // Không đổi role sang SELLER ở đây.
-      // Chỉ khi admin duyệt ACTIVE mới đổi role.
       return this.mapShopWithStats(shop, true);
     });
   }
@@ -429,14 +522,18 @@ export class ShopsService {
   }
 
   async findMine(userId: number) {
-    if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
+    if (!userId) {
+      throw new ForbiddenException('Không xác định được user từ token.');
+    }
 
     const shop = await this.shopsRepo.findOne({
       where: { userId },
       relations: { stats: true },
     });
 
-    if (!shop) throw new NotFoundException('Bạn chưa có shop.');
+    if (!shop) {
+      throw new NotFoundException('Bạn chưa có shop.');
+    }
 
     await this.ensureStatsForShop(shop);
 
@@ -447,7 +544,6 @@ export class ShopsService {
     const shop = await this.shopsRepo.findOne({
       where: { id },
       relations: { stats: true },
-      // Lấy cả shop đã xóa mềm để trả đúng thông báo.
       withDeleted: true,
     });
 
@@ -467,7 +563,6 @@ export class ShopsService {
       throw new ForbiddenException('Bạn không có quyền chỉnh sửa shop này.');
     }
 
-    // Owner không được tự đổi status.
     const { status, ...safeDto } = dto as any;
 
     await this.applyUpdate(shop, safeDto, id);
@@ -585,7 +680,6 @@ export class ShopsService {
 
       const oldOwnerId = currentShop.userId;
 
-      // 1. Chuyển role chủ shop cũ về USER
       if (oldOwnerId) {
         const owner = await userRepo.findOne({
           where: { id: oldOwnerId },
@@ -597,8 +691,6 @@ export class ShopsService {
         }
       }
 
-      // 2. Xóa các dữ liệu phụ đang tham chiếu tới product của shop
-      // Không đụng vào orders và order_items.
       await trx.query(
         `
         DELETE pf
@@ -619,10 +711,6 @@ export class ShopsService {
         [currentShop.id],
       );
 
-      // Nếu product_reviews đang FK tới products và chưa đổi sang SET NULL,
-      // cần xóa review trước để tránh lỗi foreign key.
-      // Nếu bạn muốn giữ review thì không dùng đoạn này,
-      // mà phải đổi product_reviews.product_id sang nullable + ON DELETE SET NULL.
       await trx.query(
         `
         DELETE pr
@@ -633,8 +721,6 @@ export class ShopsService {
         [currentShop.id],
       );
 
-      // 3. Xóa cứng toàn bộ products của shop
-      // product_images và product_variants sẽ bị xóa theo nếu FK ON DELETE CASCADE.
       await trx.query(
         `
         DELETE FROM products
@@ -643,8 +729,6 @@ export class ShopsService {
         [currentShop.id],
       );
 
-      // 4. Xóa cứng shop
-      // shop_stats sẽ bị xóa theo vì relation đang ON DELETE CASCADE.
       await shopRepo.delete({ id: currentShop.id });
     });
   }
@@ -655,7 +739,9 @@ export class ShopsService {
       relations: { stats: true },
     });
 
-    if (!shop) throw new NotFoundException('Không tìm thấy shop.');
+    if (!shop) {
+      throw new NotFoundException('Không tìm thấy shop.');
+    }
 
     await this.ensureStatsForShop(shop);
 
@@ -663,14 +749,18 @@ export class ShopsService {
   }
 
   async updateLogoUrl(userId: number, logoUrl: string) {
-    if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
+    if (!userId) {
+      throw new ForbiddenException('Không xác định được user từ token.');
+    }
 
     const shop = await this.shopsRepo.findOne({
       where: { userId },
       relations: { stats: true },
     });
 
-    if (!shop) throw new NotFoundException('Bạn chưa có shop.');
+    if (!shop) {
+      throw new NotFoundException('Bạn chưa có shop.');
+    }
 
     shop.logoUrl = logoUrl;
     await this.shopsRepo.save(shop);
@@ -681,14 +771,18 @@ export class ShopsService {
   }
 
   async updateCoverUrl(userId: number, coverUrl: string) {
-    if (!userId) throw new ForbiddenException('Không xác định được user từ token.');
+    if (!userId) {
+      throw new ForbiddenException('Không xác định được user từ token.');
+    }
 
     const shop = await this.shopsRepo.findOne({
       where: { userId },
       relations: { stats: true },
     });
 
-    if (!shop) throw new NotFoundException('Bạn chưa có shop.');
+    if (!shop) {
+      throw new NotFoundException('Bạn chưa có shop.');
+    }
 
     shop.coverUrl = coverUrl;
     await this.shopsRepo.save(shop);
