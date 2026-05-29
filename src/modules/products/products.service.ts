@@ -35,6 +35,11 @@ import { RecommendationsService } from '../recommendations/recommendations.servi
 
 type Opt = { name: string; values: string[] };
 
+type ProductWithImages = Product & {
+  images?: ProductImage[];
+  mainImageUrl?: string | null;
+};
+
 @Injectable()
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
@@ -581,11 +586,22 @@ export class ProductsService {
     const limit = Math.min(100, Math.max(1, Number(query.limit ?? 20)));
     const q = (query.q ?? '').trim();
 
+    const publicStatuses = [ProductStatus.ACTIVE, ProductStatus.OUT_OF_STOCK];
+
     const qb = this.productsRepo
       .createQueryBuilder('p')
       .innerJoin('p.shop', 'shop')
-      .where('p.status = :productStatus', { productStatus: ProductStatus.ACTIVE })
-      .andWhere('shop.status = :shopStatus', { shopStatus: ShopStatus.ACTIVE });
+      .where('shop.status = :shopStatus', { shopStatus: ShopStatus.ACTIVE });
+
+    if (query.status) {
+      if (!publicStatuses.includes(query.status)) {
+        throw new BadRequestException('Trạng thái sản phẩm không hợp lệ');
+      }
+
+      qb.andWhere('p.status = :status', { status: query.status });
+    } else {
+      qb.andWhere('p.status IN (:...publicStatuses)', { publicStatuses });
+    }
 
     if (query.shopId) {
       qb.andWhere('p.shopId = :shopId', { shopId: query.shopId });
@@ -762,10 +778,24 @@ export class ProductsService {
       order: { position: 'ASC', id: 'ASC' },
     });
 
-    return {
-      ...product,
-      images,
-    };
+    /*
+      Không dùng:
+        return { ...product, images }
+
+      Vì product là TypeORM Entity instance.
+      Spread sẽ biến entity thành plain object, dễ làm serializer trả thiếu images
+      khi chạy deploy.
+
+      Cách đúng:
+      Gán images trực tiếp vào entity rồi return lại chính entity đó.
+    */
+    const productWithImages = product as ProductWithImages;
+
+    productWithImages.images = images;
+    productWithImages.mainImageUrl =
+      images.find((image) => image.isMain)?.url ?? images[0]?.url ?? null;
+
+    return productWithImages;
   }
 
   async listPublicVariants(productId: number) {
