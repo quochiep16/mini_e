@@ -103,12 +103,19 @@ export class ShopsController {
     @CurrentUser('sub') userSub: number,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('range') range?: string,
   ) {
     const userId = Number(userSub);
     const p = Math.max(1, parseInt(page || '1', 10));
-    const l = Math.max(1, Math.min(100, parseInt(limit || '20', 10)));
+    const l = Math.max(1, Math.min(1000, parseInt(limit || '20', 10)));
 
-    const data = await this.shopsService.listMyShopOrders(userId, p, l);
+    const data = await this.shopsService.listMyShopOrders(
+      userId,
+      p,
+      l,
+      range,
+    );
+
     return { success: true, data };
   }
 

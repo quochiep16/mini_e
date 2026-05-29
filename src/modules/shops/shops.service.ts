@@ -218,7 +218,35 @@ export class ShopsService {
     );
   }
 
-  async listMyShopOrders(userId: number, page = 1, limit = 20) {
+  private normalizeOrderRange(range?: string) {
+    const value = String(range || 'all').trim().toLowerCase();
+
+    if (value === '1' || value === '7' || value === '30' || value === 'all') {
+      return value;
+    }
+
+    throw new BadRequestException(
+      'range không hợp lệ. Chỉ nhận 1, 7, 30 hoặc all.',
+    );
+  }
+
+  private getRangeFromDate(range?: string): Date | null {
+    const normalizedRange = this.normalizeOrderRange(range);
+
+    if (normalizedRange === 'all') return null;
+
+    const fromDate = new Date();
+    fromDate.setDate(fromDate.getDate() - Number(normalizedRange));
+
+    return fromDate;
+  }
+
+  async listMyShopOrders(
+    userId: number,
+    page = 1,
+    limit = 20,
+    range = 'all',
+  ) {
     if (!userId) {
       throw new ForbiddenException('Không xác định được user từ token.');
     }
@@ -234,38 +262,53 @@ export class ShopsService {
 
     const shopId = Number((shop as any).id);
 
-    const idRows = await this.dataSource
+    const fromDate = this.getRangeFromDate(range);
+    const safePage = Math.max(1, Number(page) || 1);
+    const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 20));
+
+    const idQuery = this.dataSource
       .createQueryBuilder()
       .select('o.id', 'id')
       .addSelect('MAX(o.created_at)', 'createdAt')
       .from('orders', 'o')
       .innerJoin('order_items', 'oi', 'oi.order_id = o.id')
       .innerJoin('products', 'p', 'p.id = oi.product_id')
-      .where('p.shop_id = :shopId', { shopId })
+      .where('p.shop_id = :shopId', { shopId });
+
+    if (fromDate) {
+      idQuery.andWhere('o.created_at >= :fromDate', { fromDate });
+    }
+
+    const idRows = await idQuery
       .groupBy('o.id')
       .orderBy('createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit)
+      .skip((safePage - 1) * safeLimit)
+      .take(safeLimit)
       .getRawMany<{ id: string; createdAt: string }>();
 
     const ids = idRows.map((r) => r.id);
 
-    const totalRow = await this.dataSource
+    const totalQuery = this.dataSource
       .createQueryBuilder()
       .select('COUNT(DISTINCT o.id)', 'cnt')
       .from('orders', 'o')
       .innerJoin('order_items', 'oi', 'oi.order_id = o.id')
       .innerJoin('products', 'p', 'p.id = oi.product_id')
-      .where('p.shop_id = :shopId', { shopId })
-      .getRawOne<{ cnt: string }>();
+      .where('p.shop_id = :shopId', { shopId });
+
+    if (fromDate) {
+      totalQuery.andWhere('o.created_at >= :fromDate', { fromDate });
+    }
+
+    const totalRow = await totalQuery.getRawOne<{ cnt: string }>();
 
     const total = Number(totalRow?.cnt || 0);
 
     if (!ids.length) {
       return {
         items: [],
-        page,
-        limit,
+        page: safePage,
+        limit: safeLimit,
         total,
       };
     }
@@ -282,8 +325,8 @@ export class ShopsService {
 
     return {
       items: ordered,
-      page,
-      limit,
+      page: safePage,
+      limit: safeLimit,
       total,
     };
   }
