@@ -54,6 +54,18 @@ const uploadOptions: MulterOptions = {
 // Upload ảnh từ RAM buffer lên Cloudinary.
 function uploadBufferToCloudinary(file: Express.Multer.File): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (!process.env.CLOUDINARY_CLOUD_NAME) {
+      return reject(new BadRequestException('Thiếu CLOUDINARY_CLOUD_NAME trên server deploy'));
+    }
+
+    if (!process.env.CLOUDINARY_API_KEY) {
+      return reject(new BadRequestException('Thiếu CLOUDINARY_API_KEY trên server deploy'));
+    }
+
+    if (!process.env.CLOUDINARY_API_SECRET) {
+      return reject(new BadRequestException('Thiếu CLOUDINARY_API_SECRET trên server deploy'));
+    }
+
     const uploadStream = cloudinary.uploader.upload_stream(
       {
         folder: 'mini-e/categories',
@@ -61,11 +73,17 @@ function uploadBufferToCloudinary(file: Express.Multer.File): Promise<string> {
       },
       (error, result) => {
         if (error) {
-          return reject(error);
+          console.error('Cloudinary category upload error:', error);
+
+          return reject(
+            new BadRequestException(
+              error.message || 'Upload ảnh category lên Cloudinary thất bại',
+            ),
+          );
         }
 
         if (!result?.secure_url) {
-          return reject(new BadRequestException('Upload ảnh thất bại'));
+          return reject(new BadRequestException('Cloudinary không trả về secure_url'));
         }
 
         resolve(result.secure_url);
