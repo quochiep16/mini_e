@@ -218,16 +218,41 @@ export class ShopsService {
     );
   }
 
-  private normalizeOrderRange(range?: string) {
-    const value = String(range || 'all').trim().toLowerCase();
+private normalizeOrderRange(range?: string) {
+  const value = String(range || 'all').trim().toLowerCase();
 
-    if (value === '1' || value === '7' || value === '30' || value === 'all') {
-      return value;
+  if (value === '1' || value === '7' || value === '30' || value === 'all') {
+    return value;
+  }
+
+  throw new BadRequestException(
+    'range không hợp lệ. Chỉ nhận 1, 7, 30 hoặc all.',
+  );
+}
+
+  private getOrderRangeSql(range?: string) {
+    const normalizedRange = this.normalizeOrderRange(range);
+
+    if (normalizedRange === 'all') {
+      return '';
     }
 
-    throw new BadRequestException(
-      'range không hợp lệ. Chỉ nhận 1, 7, 30 hoặc all.',
-    );
+    if (normalizedRange === '1') {
+      // Hôm nay: từ 00:00 hôm nay đến hiện tại
+      return 'o.created_at >= CURDATE()';
+    }
+
+    if (normalizedRange === '7') {
+      // 7 ngày theo lịch: hôm nay + 6 ngày trước
+      return 'o.created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)';
+    }
+
+    if (normalizedRange === '30') {
+      // 30 ngày theo lịch: hôm nay + 29 ngày trước
+      return 'o.created_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)';
+    }
+
+    return '';
   }
 
   private getRangeFromDate(range?: string): Date | null {
@@ -262,7 +287,7 @@ export class ShopsService {
 
     const shopId = Number((shop as any).id);
 
-    const fromDate = this.getRangeFromDate(range);
+   const rangeSql = this.getOrderRangeSql(range);
     const safePage = Math.max(1, Number(page) || 1);
     const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 20));
 
@@ -275,8 +300,8 @@ export class ShopsService {
       .innerJoin('products', 'p', 'p.id = oi.product_id')
       .where('p.shop_id = :shopId', { shopId });
 
-    if (fromDate) {
-      idQuery.andWhere('o.created_at >= :fromDate', { fromDate });
+    if (rangeSql) {
+      idQuery.andWhere(rangeSql);
     }
 
     const idRows = await idQuery
@@ -296,10 +321,9 @@ export class ShopsService {
       .innerJoin('products', 'p', 'p.id = oi.product_id')
       .where('p.shop_id = :shopId', { shopId });
 
-    if (fromDate) {
-      totalQuery.andWhere('o.created_at >= :fromDate', { fromDate });
+    if (rangeSql) {
+      totalQuery.andWhere(rangeSql);
     }
-
     const totalRow = await totalQuery.getRawOne<{ cnt: string }>();
 
     const total = Number(totalRow?.cnt || 0);
