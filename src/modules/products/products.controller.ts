@@ -23,6 +23,8 @@ import { cloudinary } from '../../config/cloudinary.config';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AccessTokenGuard } from '../../common/guards/access-token.guard';
+import { Roles } from 'src/common/decorators/roles.decorator';
+import { AppRole } from 'src/common/constants/roles';
 
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
@@ -33,12 +35,10 @@ import { UpdateProductDto } from './dto/update-product.dto';
 
 import { UserRole } from '../users/enums/user.enum';
 
-const MAX_PRODUCT_IMAGES = 6;
+const MAX_PRODUCT_IMAGES = 10;
 const MAX_IMAGE_SIZE_MB = 2;
 
 const uploadOptions: MulterOptions = {
-  // File nằm tạm trong RAM qua file.buffer.
-  // Không tạo thư mục uploads/products nữa.
   storage: memoryStorage(),
 
   fileFilter: (_req, file, cb) => {
@@ -86,9 +86,8 @@ function uploadBufferToCloudinary(file: Express.Multer.File): Promise<string> {
 export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
-  // Public: người mua xem danh sách sản phẩm.
-  // Không lấy product đã deleted_at.
-  // Không lấy product LOCKED.
+  // PUBLIC: danh sách sản phẩm
+  // Nếu categoryId là category cha thì service sẽ lấy cả category con/cháu.
   @Public()
   @Get()
   async list(@Query() q: QueryProductsDto) {
@@ -96,9 +95,7 @@ export class ProductsController {
     return { success: true, data };
   }
 
-  // Public: người mua xem sản phẩm theo shop.
-  // Không lấy product đã deleted_at.
-  // Không lấy product LOCKED.
+  // PUBLIC: sản phẩm theo shop
   @Public()
   @Get('by-shop/:shopId')
   async listByShop(
@@ -115,21 +112,21 @@ export class ProductsController {
     return { success: true, data };
   }
 
-  // Seller: xem sản phẩm của shop mình.
-  // Lấy ACTIVE, OUT_OF_STOCK, LOCKED.
-  // Không lấy product đã deleted_at.
+  // SELLER/ADMIN: xem sản phẩm của shop mình
+  @Roles(AppRole.ADMIN, AppRole.SELLER)
   @UseGuards(AccessTokenGuard)
   @Get('my-shop')
   async listMyShopProducts(
     @CurrentUser('sub') userId: number,
+    @CurrentUser('role') role: UserRole,
     @Query() query: QueryProductsDto,
   ) {
     const data = await this.productsService.findMyShopProducts(userId, query);
     return { success: true, data };
   }
 
-  // Admin: xem toàn bộ sản phẩm.
-  // Có lấy cả product đã deleted_at.
+  // ADMIN: xem toàn bộ sản phẩm
+  @Roles(AppRole.ADMIN)
   @UseGuards(AccessTokenGuard)
   @Get('admin/all')
   async listForAdmin(
@@ -140,6 +137,21 @@ export class ProductsController {
     return { success: true, data };
   }
 
+  // SELLER/ADMIN: xem chi tiết quản lý
+  // Route này phải đặt TRƯỚC @Get(':id') để tránh nhầm route.
+  @Roles(AppRole.ADMIN, AppRole.SELLER)
+  @UseGuards(AccessTokenGuard)
+  @Get(':id/manage')
+  async manageDetail(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser('sub') userId: number,
+    @CurrentUser('role') role: UserRole,
+  ) {
+    const data = await this.productsService.findManageDetail(id, userId, role);
+    return { success: true, data };
+  }
+
+  // PUBLIC: xem biến thể sản phẩm
   @Public()
   @Get(':id/variants')
   async listPublicVariants(@Param('id', ParseIntPipe) id: number) {
@@ -147,9 +159,7 @@ export class ProductsController {
     return { success: true, data };
   }
 
-  // Public detail:
-  // Product đã deleted_at sẽ không xem được.
-  // Product LOCKED sẽ không xem được.
+  // PUBLIC: chi tiết sản phẩm
   @Public()
   @Get(':id')
   async detail(@Param('id', ParseIntPipe) id: number) {
@@ -157,6 +167,8 @@ export class ProductsController {
     return { success: true, data };
   }
 
+  // SELLER: tạo sản phẩm cho shop của mình
+  @Roles(AppRole.SELLER)
   @UseGuards(AccessTokenGuard)
   @Post()
   @UseInterceptors(FilesInterceptor('images', MAX_PRODUCT_IMAGES, uploadOptions))
@@ -181,6 +193,8 @@ export class ProductsController {
     return { success: true, data: product };
   }
 
+  // SELLER/ADMIN: sửa sản phẩm
+  @Roles(AppRole.ADMIN, AppRole.SELLER)
   @UseGuards(AccessTokenGuard)
   @Patch(':id')
   async updateProduct(
@@ -193,6 +207,8 @@ export class ProductsController {
     return { success: true, data };
   }
 
+  // SELLER/ADMIN: xóa sản phẩm
+  @Roles(AppRole.ADMIN, AppRole.SELLER)
   @UseGuards(AccessTokenGuard)
   @Delete(':id')
   async removeProduct(
@@ -204,6 +220,8 @@ export class ProductsController {
     return { success: true, data };
   }
 
+  // SELLER/ADMIN: tạo biến thể
+  @Roles(AppRole.ADMIN, AppRole.SELLER)
   @UseGuards(AccessTokenGuard)
   @Post(':id/variants/generate')
   async generateVariants(
@@ -222,6 +240,8 @@ export class ProductsController {
     return { success: true, data };
   }
 
+  // SELLER/ADMIN: sửa biến thể
+  @Roles(AppRole.ADMIN, AppRole.SELLER)
   @UseGuards(AccessTokenGuard)
   @Patch(':productId/variants/:variantId')
   async updateVariant(

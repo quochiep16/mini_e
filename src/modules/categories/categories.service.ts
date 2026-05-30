@@ -1,7 +1,6 @@
 import {
   BadRequestException,
   ConflictException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,7 +8,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { Product } from '../products/entities/product.entity';
-import { UserRole } from '../users/enums/user.enum';
 import { Category } from './entities/category.entity';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { SearchCategoriesDto } from './dto/search-categories.dto';
@@ -28,18 +26,6 @@ export class CategoriesService {
     @InjectRepository(Product)
     private readonly productsRepo: Repository<Product>,
   ) {}
-
-  private assertAdmin(role?: UserRole) {
-    if (role !== UserRole.ADMIN) {
-      throw new ForbiddenException('Chỉ ADMIN mới được thao tác category');
-    }
-  }
-
-  private assertSellerOrAdmin(role?: UserRole) {
-    if (role !== UserRole.SELLER && role !== UserRole.ADMIN) {
-      throw new ForbiddenException('Chỉ SELLER hoặc ADMIN mới được lấy danh sách category này');
-    }
-  }
 
   private isUniqueViolation(error: any) {
     return (
@@ -220,9 +206,7 @@ export class CategoriesService {
     };
   }
 
-  async create(role: UserRole, dto: CreateCategoryDto) {
-    this.assertAdmin(role);
-
+  async create(dto: CreateCategoryDto) {
     const name = dto.name?.trim();
 
     if (!name) {
@@ -263,9 +247,9 @@ export class CategoriesService {
   async findHomeRootCategories() {
     return this.categoriesRepo
       .createQueryBuilder('category')
-      .where('category.is_active = :isActive', { isActive: true })
-      .andWhere('category.parent_id IS NULL')
-      .orderBy('category.sort_order', 'ASC')
+      .where('category.isActive = :isActive', { isActive: true })
+      .andWhere('category.parentId IS NULL')
+      .orderBy('category.sortOrder', 'ASC')
       .addOrderBy('category.name', 'ASC')
       .addOrderBy('category.id', 'ASC')
       .getMany();
@@ -278,8 +262,8 @@ export class CategoriesService {
   async findActiveTree() {
     const items = await this.categoriesRepo
       .createQueryBuilder('category')
-      .where('category.is_active = :isActive', { isActive: true })
-      .orderBy('category.sort_order', 'ASC')
+      .where('category.isActive = :isActive', { isActive: true })
+      .orderBy('category.sortOrder', 'ASC')
       .addOrderBy('category.name', 'ASC')
       .addOrderBy('category.id', 'ASC')
       .getMany();
@@ -292,13 +276,11 @@ export class CategoriesService {
    * lấy tất cả category active, gồm cha/con/cháu.
    * fullName giúp FE hiển thị dạng: Cha / Con / Cháu
    */
-  async findSellerOptions(role: UserRole) {
-    this.assertSellerOrAdmin(role);
-
+  async findSellerOptions() {
     const items = await this.categoriesRepo
       .createQueryBuilder('category')
-      .where('category.is_active = :isActive', { isActive: true })
-      .orderBy('category.sort_order', 'ASC')
+      .where('category.isActive = :isActive', { isActive: true })
+      .orderBy('category.sortOrder', 'ASC')
       .addOrderBy('category.name', 'ASC')
       .addOrderBy('category.id', 'ASC')
       .getMany();
@@ -316,9 +298,7 @@ export class CategoriesService {
    * Admin list:
    * lấy cả active/inactive, search, lọc parent, lọc trạng thái, phân trang.
    */
-  async findAllForAdmin(role: UserRole, query: SearchCategoriesDto) {
-    this.assertAdmin(role);
-
+  async findAllForAdmin(query: SearchCategoriesDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
     const sortBy = query.sortBy ?? 'sortOrder';
@@ -384,29 +364,34 @@ export class CategoriesService {
         parent: true,
         children: true,
       },
-      order: {
-        children: {
-          sortOrder: 'ASC',
-          name: 'ASC',
-          id: 'ASC',
-        },
-      },
     });
 
     if (!category) {
       throw new NotFoundException('Không tìm thấy category');
     }
 
-    category.children = (category.children ?? []).filter(
-      (child) => child.isActive && !child.deletedAt,
-    );
+    category.children = (category.children ?? [])
+      .filter((child) => child.isActive && !child.deletedAt)
+      .sort((a, b) => {
+        const sortOrderCompare = (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
+
+        if (sortOrderCompare !== 0) {
+          return sortOrderCompare;
+        }
+
+        const nameCompare = a.name.localeCompare(b.name, 'vi');
+
+        if (nameCompare !== 0) {
+          return nameCompare;
+        }
+
+        return a.id - b.id;
+      });
 
     return category;
   }
 
-  async update(role: UserRole, id: number, dto: UpdateCategoryDto) {
-    this.assertAdmin(role);
-
+  async update(id: number, dto: UpdateCategoryDto) {
     const category = await this.findCategoryOrFail(id);
 
     if (dto.parentId !== undefined) {
@@ -467,9 +452,7 @@ export class CategoriesService {
     }
   }
 
-  async remove(role: UserRole, id: number) {
-    this.assertAdmin(role);
-
+  async remove(id: number) {
     const category = await this.findCategoryOrFail(id);
 
     /**
@@ -484,7 +467,7 @@ export class CategoriesService {
       .set({
         parentId: null,
       })
-      .where('parent_id = :id', { id })
+      .where('parentId = :id', { id })
       .execute();
 
     await this.productsRepo
@@ -493,7 +476,7 @@ export class CategoriesService {
       .set({
         categoryId: null,
       } as any)
-      .where('category_id = :id', { id })
+      .where('categoryId = :id', { id })
       .execute();
 
     await this.categoriesRepo.softDelete({

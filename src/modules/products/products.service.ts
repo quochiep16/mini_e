@@ -589,9 +589,9 @@ export class ProductsService {
 
   private assertCanChangeStatus(actorRole: UserRole, nextStatus: ProductStatus) {
     if (actorRole === UserRole.ADMIN) {
-      if (nextStatus !== ProductStatus.LOCKED) {
+      if (![ProductStatus.ACTIVE, ProductStatus.LOCKED].includes(nextStatus)) {
         throw new ForbiddenException(
-          'Admin chỉ được chuyển sản phẩm sang trạng thái đã khóa',
+          'Admin chỉ được chuyển sản phẩm sang đang bán hoặc đã khóa',
         );
       }
 
@@ -705,6 +705,23 @@ export class ProductsService {
         }`,
       );
     }
+  }
+
+  async findManageDetail(id: number, actorId: number, actorRole: UserRole) {
+    const product = await this.assertCanManageProduct(id, actorId, actorRole);
+
+    const images = await this.imagesRepo.find({
+      where: { productId: id },
+      order: { position: 'ASC', id: 'ASC' },
+    });
+
+    const productWithImages = product as ProductWithImages;
+
+    productWithImages.images = images;
+    productWithImages.mainImageUrl =
+      images.find((image) => image.isMain)?.url ?? images[0]?.url ?? null;
+
+    return productWithImages;
   }
 
   async createBySeller(userId: number, dto: CreateProductDto) {

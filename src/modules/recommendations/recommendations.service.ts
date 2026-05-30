@@ -25,6 +25,7 @@ const PRODUCT_SCORE_MAX = 40;
 const CATEGORY_SCORE_MAX = 8;
 const TAG_SCORE_MAX = 80;
 const TAG_SCORE_LOG_MULTIPLIER = 15;
+
 const TRENDING_TOP_BONUS = 2;
 const TRENDING_NORMAL_BONUS = 1;
 
@@ -269,6 +270,56 @@ export class RecommendationsService {
     return EVENT_WEIGHTS[eventType] ?? 0;
   }
 
+  private async getCategoryAndDescendantIds(
+    categoryId: number,
+  ): Promise<number[]> {
+    if (!Number.isInteger(categoryId) || categoryId <= 0) {
+      return [];
+    }
+
+    const rootRows = await this.dataSource.query(
+      `
+      SELECT id
+      FROM categories
+      WHERE id = ?
+        AND deleted_at IS NULL
+      LIMIT 1
+      `,
+      [categoryId],
+    );
+
+    if (!rootRows.length) {
+      return [];
+    }
+
+    const ids = new Set<number>([categoryId]);
+    let currentLevel = [categoryId];
+
+    while (currentLevel.length > 0) {
+      const children = await this.dataSource.query(
+        `
+        SELECT id
+        FROM categories
+        WHERE parent_id IN (?)
+          AND deleted_at IS NULL
+        `,
+        [currentLevel],
+      );
+
+      const nextLevel = children
+        .map((item: any) => Number(item.id))
+        .filter((id: number) => Number.isInteger(id) && id > 0 && !ids.has(id));
+
+      for (const id of nextLevel) {
+        ids.add(id);
+      }
+
+      currentLevel = nextLevel;
+    }
+
+    return Array.from(ids);
+  }
+
   async recordEvent(userId: number, dto: CreateInteractionDto) {
     if (!userId) {
       throw new BadRequestException('Không xác định được người dùng');
@@ -319,9 +370,7 @@ export class RecommendationsService {
           dto.productId,
           weight,
         );
-      }
 
-      if (weight !== 0) {
         await this.increaseUserProductPreference(
           manager,
           userId,
@@ -341,7 +390,7 @@ export class RecommendationsService {
         eventType: dto.eventType,
         weight,
         note:
-          'CLICK hiện đang để weight = 0. Nên FE chỉ gửi VIEW_DETAIL khi vào trang chi tiết sản phẩm.',
+          'CLICK hiện có weight = 0. FE nên gửi VIEW_DETAIL khi trang chi tiết load thành công.',
         trendingNote:
           'product_trending sẽ được cron job tính lại mỗi 30 phút',
       },
@@ -640,6 +689,27 @@ export class RecommendationsService {
     const limit = Number(query.limit ?? 20);
     const offset = (page - 1) * limit;
 
+    const categoryId = query.categoryId ? Number(query.categoryId) : null;
+    const categoryIds = categoryId
+      ? await this.getCategoryAndDescendantIds(categoryId)
+      : [];
+
+    if (categoryId && categoryIds.length === 0) {
+      return {
+        page,
+        limit,
+        source: 'category_not_found',
+        message: 'Không tìm thấy category',
+        categoryId,
+        categoryIds: [],
+        items: [],
+      };
+    }
+
+    const categoryFilterSql = categoryIds.length
+      ? 'AND p.category_id IN (?)'
+      : '';
+
     const preferenceRows = await this.dataSource.query(
       `
       SELECT
@@ -762,7 +832,10 @@ export class RecommendationsService {
           base.productId,
           base.categoryScore,
           base.rawTagScore,
-          LEAST(LOG10(base.rawTagScore + 1) * ${TAG_SCORE_LOG_MULTIPLIER}, ${TAG_SCORE_MAX}) AS tagScore
+          LEAST(
+            LOG10(base.rawTagScore + 1) * ${TAG_SCORE_LOG_MULTIPLIER},
+            ${TAG_SCORE_MAX}
+          ) AS tagScore
 
         FROM (
           SELECT
@@ -771,22 +844,25 @@ export class RecommendationsService {
             MAX(
               CASE
                 WHEN ucp.id IS NULL THEN 0
-                ELSE 3 + LEAST(
-                  COALESCE(ucp.score, 0)
-                  *
-                  POW(
-                    ${DECAY_BASE},
-                    GREATEST(
-                      TIMESTAMPDIFF(
-                        DAY,
-                        COALESCE(ucp.last_interacted_at, ucp.updated_at, NOW(6)),
-                        NOW(6)
-                      ),
-                      0
-                    ) / ${DECAY_DAYS}
-                  ),
-                  50
-                ) * 0.1
+                ELSE LEAST(
+                  3 + LEAST(
+                    COALESCE(ucp.score, 0)
+                    *
+                    POW(
+                      ${DECAY_BASE},
+                      GREATEST(
+                        TIMESTAMPDIFF(
+                          DAY,
+                          COALESCE(ucp.last_interacted_at, ucp.updated_at, NOW(6)),
+                          NOW(6)
+                        ),
+                        0
+                      ) / ${DECAY_DAYS}
+                    ),
+                    50
+                  ) * 0.1,
+                  ${CATEGORY_SCORE_MAX}
+                )
               END
             ) AS categoryScore,
 
@@ -865,6 +941,7 @@ export class RecommendationsService {
       WHERE p.deleted_at IS NULL
         AND p.stock > 0
         AND p.status = 'ACTIVE'
+        ${categoryFilterSql}
 
       ORDER BY
         recommendationScore DESC,
@@ -874,28 +951,40 @@ export class RecommendationsService {
 
       LIMIT ? OFFSET ?
       `,
-      [userId, userId, userId, userId, limit, offset],
+      [
+        userId,
+        userId,
+        userId,
+        userId,
+        ...(categoryIds.length ? [categoryIds] : []),
+        limit,
+        offset,
+      ],
     );
 
     return {
       page,
       limit,
+      categoryId,
+      categoryIds,
       source: hasPreference ? 'personalized' : 'fallback',
-      // message: hasPreference
-      //   ? 'Gợi ý dựa trên productScore, categoryScore, tagScore và trendingBonus'
-      //   : 'User chưa có dữ liệu sở thích, trả về sản phẩm phổ biến/trending',
-      // formula: {
-      //   recommendationScore:
-      //     'productScore + categoryScore + tagScore + trendingBonus',
-      //   productScore: `min(effective_user_product_score, ${PRODUCT_SCORE_MAX})`,
-      //   categoryScore:
-      //     '3 + min(effective_user_category_score, 50) * 0.1, max 8',
-      //   rawTagScore:
-      //     'sum(min(effective_user_tag_score, 100) * min(product_tag_weight, 10) * rarityFactor)',
-      //   tagScore: `min(log10(rawTagScore + 1) * ${TAG_SCORE_LOG_MULTIPLIER}, ${TAG_SCORE_MAX})`,
-      //   decay: `effectiveScore = score * ${DECAY_BASE}^(daysSinceLastInteraction / ${DECAY_DAYS})`,
-      //   trendingBonus: 'Top 20 = 2, rank 21-70 = 1',
-      // },
+      message: categoryId
+        ? 'Gợi ý sản phẩm trong category đã chọn, đã bao gồm category con'
+        : hasPreference
+          ? 'Gợi ý dựa trên productScore, categoryScore, tagScore và trendingBonus'
+          : 'User chưa có dữ liệu sở thích, trả về sản phẩm phổ biến/trending',
+      formula: {
+        recommendationScore:
+          'productScore + categoryScore + tagScore + trendingBonus',
+        productScore: `min(effective_user_product_score, ${PRODUCT_SCORE_MAX})`,
+        categoryScore:
+          '3 + min(effective_user_category_score, 50) * 0.1, max 8',
+        rawTagScore:
+          'sum(min(effective_user_tag_score, 100) * min(product_tag_weight, 10) * rarityFactor)',
+        tagScore: `min(log10(rawTagScore + 1) * ${TAG_SCORE_LOG_MULTIPLIER}, ${TAG_SCORE_MAX})`,
+        decay: `effectiveScore = score * ${DECAY_BASE}^(daysSinceLastInteraction / ${DECAY_DAYS})`,
+        trendingBonus: 'Top 20 = 2, rank 21-70 = 1',
+      },
       items,
     };
   }
@@ -911,6 +1000,30 @@ export class RecommendationsService {
     const page = Number(query.page ?? 1);
     const limit = Number(query.limit ?? 50);
     const offset = (page - 1) * limit;
+
+    const categoryId = query.categoryId ? Number(query.categoryId) : null;
+    const categoryIds = categoryId
+      ? await this.getCategoryAndDescendantIds(categoryId)
+      : [];
+
+    if (categoryId && categoryIds.length === 0) {
+      return {
+        page,
+        limit,
+        userId,
+        categoryId,
+        categoryIds: [],
+        formula: {
+          recommendationScore:
+            'productScore + categoryScore + tagScore + trendingBonus',
+        },
+        items: [],
+      };
+    }
+
+    const categoryFilterSql = categoryIds.length
+      ? 'AND p.category_id IN (?)'
+      : '';
 
     const rows = await this.dataSource.query(
       `
@@ -1029,7 +1142,10 @@ export class RecommendationsService {
             base.categoryRawScore,
             base.categoryScore,
             base.rawTagScore,
-            LEAST(LOG10(base.rawTagScore + 1) * ${TAG_SCORE_LOG_MULTIPLIER}, ${TAG_SCORE_MAX}) AS tagScore,
+            LEAST(
+              LOG10(base.rawTagScore + 1) * ${TAG_SCORE_LOG_MULTIPLIER},
+              ${TAG_SCORE_MAX}
+            ) AS tagScore,
             base.matchedTagCount,
             base.matchedTags
 
@@ -1042,22 +1158,25 @@ export class RecommendationsService {
               MAX(
                 CASE
                   WHEN ucp.id IS NULL THEN 0
-                  ELSE 3 + LEAST(
-                    COALESCE(ucp.score, 0)
-                    *
-                    POW(
-                      ${DECAY_BASE},
-                      GREATEST(
-                        TIMESTAMPDIFF(
-                          DAY,
-                          COALESCE(ucp.last_interacted_at, ucp.updated_at, NOW(6)),
-                          NOW(6)
-                        ),
-                        0
-                      ) / ${DECAY_DAYS}
-                    ),
-                    50
-                  ) * 0.1
+                  ELSE LEAST(
+                    3 + LEAST(
+                      COALESCE(ucp.score, 0)
+                      *
+                      POW(
+                        ${DECAY_BASE},
+                        GREATEST(
+                          TIMESTAMPDIFF(
+                            DAY,
+                            COALESCE(ucp.last_interacted_at, ucp.updated_at, NOW(6)),
+                            NOW(6)
+                          ),
+                          0
+                        ) / ${DECAY_DAYS}
+                      ),
+                      50
+                    ) * 0.1,
+                    ${CATEGORY_SCORE_MAX}
+                  )
                 END
               ) AS categoryScore,
 
@@ -1158,6 +1277,7 @@ export class RecommendationsService {
         WHERE p.deleted_at IS NULL
           AND p.stock > 0
           AND p.status = 'ACTIVE'
+          ${categoryFilterSql}
       ) scored
 
       ORDER BY
@@ -1168,26 +1288,35 @@ export class RecommendationsService {
 
       LIMIT ? OFFSET ?
       `,
-      [userId, userId, userId, limit, offset],
+      [
+        userId,
+        userId,
+        userId,
+        ...(categoryIds.length ? [categoryIds] : []),
+        limit,
+        offset,
+      ],
     );
 
     return {
       page,
       limit,
       userId,
-      // formula: {
-      //   recommendationScore:
-      //     'productScore + categoryScore + tagScore + trendingBonus',
-      //   productScore: `min(effective_user_product_score, ${PRODUCT_SCORE_MAX})`,
-      //   categoryScore:
-      //     'Nếu match category: 3 + min(effective_user_category_score, 50) * 0.1',
-      //   rawTagScore:
-      //     'sum(min(effective_user_tag_score, 100) * min(product_tag_weight, 10) * rarityFactor)',
-      //   tagScore: `min(log10(rawTagScore + 1) * ${TAG_SCORE_LOG_MULTIPLIER}, ${TAG_SCORE_MAX})`,
-      //   decay: `effectiveScore = score * ${DECAY_BASE}^(daysSinceLastInteraction / ${DECAY_DAYS})`,
-      //   trendingBonus:
-      //     'Top 20 trending = 2, rank 21-70 = 1, còn lại = 0',
-      // },
+      categoryId,
+      categoryIds,
+      formula: {
+        recommendationScore:
+          'productScore + categoryScore + tagScore + trendingBonus',
+        productScore: `min(effective_user_product_score, ${PRODUCT_SCORE_MAX})`,
+        categoryScore:
+          'Nếu match category: 3 + min(effective_user_category_score, 50) * 0.1',
+        rawTagScore:
+          'sum(min(effective_user_tag_score, 100) * min(product_tag_weight, 10) * rarityFactor)',
+        tagScore: `min(log10(rawTagScore + 1) * ${TAG_SCORE_LOG_MULTIPLIER}, ${TAG_SCORE_MAX})`,
+        decay: `effectiveScore = score * ${DECAY_BASE}^(daysSinceLastInteraction / ${DECAY_DAYS})`,
+        trendingBonus:
+          'Top 20 trending = 2, rank 21-70 = 1, còn lại = 0',
+      },
       items: rows,
     };
   }

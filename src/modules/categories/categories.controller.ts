@@ -18,9 +18,10 @@ import { memoryStorage } from 'multer';
 import type { Express } from 'express';
 
 import { cloudinary } from '../../config/cloudinary.config';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
-import { UserRole } from '../users/enums/user.enum';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { AppRole } from '../../common/constants/roles';
+
 import { CategoriesService } from './categories.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { SearchCategoriesDto } from './dto/search-categories.dto';
@@ -103,8 +104,8 @@ export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 
   /**
-   * Public cho trang home:
-   * chỉ lấy category gốc trên cùng parent_id IS NULL và is_active = true.
+   * User / Home / MainLayout:
+   * Chỉ lấy category cha active.
    */
   @Public()
   @Get()
@@ -117,6 +118,10 @@ export class CategoriesController {
     };
   }
 
+  /**
+   * User / Home / MainLayout:
+   * Chỉ lấy category cha active.
+   */
   @Public()
   @Get('home')
   async home() {
@@ -129,8 +134,8 @@ export class CategoriesController {
   }
 
   /**
-   * Public tree nếu sau này FE cần menu dạng cây.
-   * Trang home không nên dùng API này nếu chỉ muốn category cha.
+   * Public tree:
+   * Nếu sau này FE cần menu dạng cây.
    */
   @Public()
   @Get('tree')
@@ -144,12 +149,14 @@ export class CategoriesController {
   }
 
   /**
-   * Seller/Admin dùng khi thêm sản phẩm:
-   * lấy tất cả category active, gồm cha/con/cháu.
+   * Seller/Admin:
+   * Dùng ở trang tạo/sửa sản phẩm.
+   * Lấy tất cả category active, gồm cha/con/cháu.
    */
   @Get('seller-options')
-  async sellerOptions(@CurrentUser('role') role: UserRole) {
-    const data = await this.categoriesService.findSellerOptions(role);
+  @Roles(AppRole.SELLER, AppRole.ADMIN)
+  async sellerOptions() {
+    const data = await this.categoriesService.findSellerOptions();
 
     return {
       success: true,
@@ -158,15 +165,13 @@ export class CategoriesController {
   }
 
   /**
-   * Admin quản lý category:
-   * lấy tất cả category, có search/lọc/phân trang.
+   * Admin:
+   * Quản lý toàn bộ category, có search/lọc/phân trang.
    */
   @Get('admin')
-  async adminList(
-    @CurrentUser('role') role: UserRole,
-    @Query() query: SearchCategoriesDto,
-  ) {
-    const data = await this.categoriesService.findAllForAdmin(role, query);
+  @Roles(AppRole.ADMIN)
+  async adminList(@Query() query: SearchCategoriesDto) {
+    const data = await this.categoriesService.findAllForAdmin(query);
 
     return {
       success: true,
@@ -174,6 +179,10 @@ export class CategoriesController {
     };
   }
 
+  /**
+   * Public detail:
+   * Chỉ lấy category active.
+   */
   @Public()
   @Get(':id')
   async detail(@Param('id', ParseIntPipe) id: number) {
@@ -190,9 +199,9 @@ export class CategoriesController {
    * FE gửi multipart/form-data, field ảnh tên là: image
    */
   @Post()
+  @Roles(AppRole.ADMIN)
   @UseInterceptors(FileInterceptor('image', uploadOptions))
   async create(
-    @CurrentUser('role') role: UserRole,
     @Body() dto: CreateCategoryDto,
     @UploadedFile() file?: Express.Multer.File,
   ) {
@@ -202,7 +211,7 @@ export class CategoriesController {
       imageUrl = await uploadBufferToCloudinary(file);
     }
 
-    const data = await this.categoriesService.create(role, {
+    const data = await this.categoriesService.create({
       ...dto,
       imageUrl,
     });
@@ -216,13 +225,13 @@ export class CategoriesController {
 
   /**
    * Admin sửa category.
-   * Nếu gửi imageUrl = null hoặc '' thì xóa ảnh cũ.
    * Nếu upload file mới thì imageUrl được thay bằng URL Cloudinary.
+   * Nếu FE gửi imageUrl rỗng/null thì service sẽ xóa ảnh cũ.
    */
   @Patch(':id')
+  @Roles(AppRole.ADMIN)
   @UseInterceptors(FileInterceptor('image', uploadOptions))
   async update(
-    @CurrentUser('role') role: UserRole,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateCategoryDto,
     @UploadedFile() file?: Express.Multer.File,
@@ -233,7 +242,7 @@ export class CategoriesController {
       imageUrl = await uploadBufferToCloudinary(file);
     }
 
-    const data = await this.categoriesService.update(role, id, {
+    const data = await this.categoriesService.update(id, {
       ...dto,
       imageUrl,
     });
@@ -247,16 +256,11 @@ export class CategoriesController {
 
   /**
    * Admin xóa mềm category.
-   * Khi xóa mềm:
-   * - category con sẽ được đưa lên thành category gốc
-   * - sản phẩm đang gắn category này sẽ được set categoryId = null
    */
   @Delete(':id')
-  async remove(
-    @CurrentUser('role') role: UserRole,
-    @Param('id', ParseIntPipe) id: number,
-  ) {
-    const data = await this.categoriesService.remove(role, id);
+  @Roles(AppRole.ADMIN)
+  async remove(@Param('id', ParseIntPipe) id: number) {
+    const data = await this.categoriesService.remove(id);
 
     return {
       success: true,
