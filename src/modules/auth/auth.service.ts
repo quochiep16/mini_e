@@ -486,16 +486,45 @@ export class AuthService {
 
   async requestPasswordReset(dto: RequestResetDto) {
     const email = dto.email.trim().toLowerCase();
-    const user = await this.usersRepo.findOne({ where: { email } });
 
-    if (!user) throw new NotFoundException('Email không tồn tại');
+    const user = await this.usersRepo
+      .createQueryBuilder('u')
+      .withDeleted()
+      .where('u.email = :email', { email })
+      .getOne();
+
+    if (!user) {
+      throw new NotFoundException('Email không tồn tại');
+    }
+
+    /**
+     * Nếu tài khoản đang bị xóa mềm:
+     * - Không cho reset password ở luồng quên mật khẩu.
+     * - Trả data để FE chuyển sang luồng khôi phục tài khoản.
+     */
+    if (user.deletedAt) {
+      return {
+        needRecover: true,
+        identifier: user.email ?? email,
+        via: 'email' as const,
+        target: user.email ? this.maskEmail(user.email) : email,
+        message:
+          'Tài khoản này đang bị vô hiệu hóa. Vui lòng khôi phục tài khoản trước.',
+      };
+    }
 
     if (user.timeOtp) {
       const now = Date.now();
       const lastSend = user.timeOtp.getTime() - this.otpWindowMinutes * 60 * 1000;
+
       if ((now - lastSend) / 1000 < this.otpResendCooldownSec) {
-        const remain = Math.ceil(this.otpResendCooldownSec - (now - lastSend) / 1000);
-        throw new BadRequestException(`Vui lòng đợi ${remain}s trước khi yêu cầu lại OTP`);
+        const remain = Math.ceil(
+          this.otpResendCooldownSec - (now - lastSend) / 1000,
+        );
+
+        throw new BadRequestException(
+          `Vui lòng đợi ${remain}s trước khi yêu cầu lại OTP`,
+        );
       }
     }
 
@@ -504,6 +533,7 @@ export class AuthService {
 
     user.otp = otpHash as any;
     user.timeOtp = new Date(Date.now() + this.otpWindowMinutes * 60 * 1000);
+
     await this.usersRepo.save(user);
 
     await this.emailSvc.sendPasswordResetCode(this.requireEmail(user), otp);
@@ -511,6 +541,8 @@ export class AuthService {
     return {
       sent: true,
       email: this.maskEmail(this.requireEmail(user)),
+      target: this.maskEmail(this.requireEmail(user)),
+      via: 'email' as const,
       expiresAt: user.timeOtp,
       ...(this.shouldShowOtpInResponse() ? { devOtp: otp } : {}),
     };

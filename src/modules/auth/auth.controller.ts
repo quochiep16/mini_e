@@ -153,14 +153,24 @@ export class AuthController {
   @Public()
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
-  async forgotPassword(@Body() dto: RequestResetDto) {
+  async forgotPassword(@Body() dto: RequestResetDto, @Res() res: Response) {
     const data = await this.authService.requestPasswordReset(dto);
 
-    return {
+    if ((data as any)?.needRecover) {
+      return res.status(423).json({
+        success: false,
+        statusCode: 423,
+        message:
+          'Tài khoản đang bị vô hiệu hóa. Vui lòng khôi phục tài khoản trước.',
+        data,
+      });
+    }
+
+    return res.status(HttpStatus.OK).json({
       success: true,
       statusCode: HttpStatus.OK,
       data,
-    };
+    });
   }
 
   @Public()

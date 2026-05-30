@@ -1,5 +1,6 @@
-import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IsBoolean, IsEnum, IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { UserRole } from '../enums/user.enum';
 
 export class QueryUserDto {
   @IsOptional()
@@ -17,6 +18,19 @@ export class QueryUserDto {
   @IsOptional()
   @IsString({ message: 'search phải là chuỗi' })
   search?: string;
+
+  @IsOptional()
+  @IsEnum(UserRole, { message: 'role không hợp lệ' })
+  role?: UserRole;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  })
+  @IsBoolean({ message: 'isVerified phải là boolean' })
+  isVerified?: boolean;
 
   @IsOptional()
   @IsIn(

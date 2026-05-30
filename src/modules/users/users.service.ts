@@ -299,10 +299,24 @@ export class UsersService {
 
     const qb = this.repo.createQueryBuilder('u');
 
-    if (q.search) {
-      const kw = `%${q.search}%`;
-      qb.andWhere('(u.name LIKE :kw OR u.email LIKE :kw OR u.phone LIKE :kw)', {
-        kw,
+    const keyword = q.search?.trim();
+
+    if (keyword) {
+      const kw = `%${keyword}%`;
+
+      qb.andWhere(
+        '(LOWER(u.name) LIKE LOWER(:kw) OR LOWER(u.email) LIKE LOWER(:kw) OR u.phone LIKE :kw)',
+        { kw },
+      );
+    }
+
+    if (q.role) {
+      qb.andWhere('u.role = :role', { role: q.role });
+    }
+
+    if (q.isVerified !== undefined) {
+      qb.andWhere('u.isVerified = :isVerified', {
+        isVerified: q.isVerified,
       });
     }
 
@@ -351,10 +365,24 @@ export class UsersService {
       .withDeleted()
       .where('u.deletedAt IS NOT NULL');
 
-    if (q.search) {
-      const kw = `%${q.search}%`;
-      qb.andWhere('(u.name LIKE :kw OR u.email LIKE :kw OR u.phone LIKE :kw)', {
-        kw,
+    const keyword = q.search?.trim();
+
+    if (keyword) {
+      const kw = `%${keyword}%`;
+
+      qb.andWhere(
+        '(LOWER(u.name) LIKE LOWER(:kw) OR LOWER(u.email) LIKE LOWER(:kw) OR u.phone LIKE :kw)',
+        { kw },
+      );
+    }
+
+    if (q.role) {
+      qb.andWhere('u.role = :role', { role: q.role });
+    }
+
+    if (q.isVerified !== undefined) {
+      qb.andWhere('u.isVerified = :isVerified', {
+        isVerified: q.isVerified,
       });
     }
 
@@ -620,265 +648,195 @@ export class UsersService {
     await queryRunner.startTransaction();
 
     try {
-      const shops = await queryRunner.query(
-        `
-        SELECT id
-        FROM shops
-        WHERE user_id = ?
-        `,
-        [id],
-      );
+      const hasTable = async (tableName: string) => {
+        const rows = await queryRunner.query(
+          `
+          SELECT TABLE_NAME
+          FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = ?
+          LIMIT 1
+          `,
+          [tableName],
+        );
 
-      const shopIds = shops.map((item: any) => Number(item.id));
-      const shopPlaceholders = shopIds.map(() => '?').join(',');
+        return rows.length > 0;
+      };
+
+      const hasColumn = async (tableName: string, columnName: string) => {
+        const rows = await queryRunner.query(
+          `
+          SELECT COLUMN_NAME
+          FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = ?
+            AND COLUMN_NAME = ?
+          LIMIT 1
+          `,
+          [tableName, columnName],
+        );
+
+        return rows.length > 0;
+      };
+
+      const deleteByColumn = async (
+        tableName: string,
+        columnName: string,
+        value: number,
+      ) => {
+        if (!(await hasTable(tableName))) return;
+        if (!(await hasColumn(tableName, columnName))) return;
+
+        await queryRunner.query(
+          `
+          DELETE FROM ${tableName}
+          WHERE ${columnName} = ?
+          `,
+          [value],
+        );
+      };
+
+      const updateNullByColumn = async (
+        tableName: string,
+        columnName: string,
+        value: number,
+      ) => {
+        if (!(await hasTable(tableName))) return;
+        if (!(await hasColumn(tableName, columnName))) return;
+
+        await queryRunner.query(
+          `
+          UPDATE ${tableName}
+          SET ${columnName} = NULL
+          WHERE ${columnName} = ?
+          `,
+          [value],
+        );
+      };
+
+      const selectIdsByColumn = async (
+        tableName: string,
+        columnName: string,
+        value: number,
+      ): Promise<number[]> => {
+        if (!(await hasTable(tableName))) return [];
+        if (!(await hasColumn(tableName, columnName))) return [];
+
+        const rows = await queryRunner.query(
+          `
+          SELECT id
+          FROM ${tableName}
+          WHERE ${columnName} = ?
+          `,
+          [value],
+        );
+
+        return rows.map((item: any) => Number(item.id)).filter(Boolean);
+      };
+
+      const deleteByIds = async (tableName: string, columnName: string, ids: number[]) => {
+        if (!ids.length) return;
+        if (!(await hasTable(tableName))) return;
+        if (!(await hasColumn(tableName, columnName))) return;
+
+        const placeholders = ids.map(() => '?').join(',');
+
+        await queryRunner.query(
+          `
+          DELETE FROM ${tableName}
+          WHERE ${columnName} IN (${placeholders})
+          `,
+          ids,
+        );
+      };
+
+      const updateNullByIds = async (
+        tableName: string,
+        columnName: string,
+        ids: number[],
+      ) => {
+        if (!ids.length) return;
+        if (!(await hasTable(tableName))) return;
+        if (!(await hasColumn(tableName, columnName))) return;
+
+        const placeholders = ids.map(() => '?').join(',');
+
+        await queryRunner.query(
+          `
+          UPDATE ${tableName}
+          SET ${columnName} = NULL
+          WHERE ${columnName} IN (${placeholders})
+          `,
+          ids,
+        );
+      };
+
+      const shopIds = await selectIdsByColumn('shops', 'user_id', id);
 
       let productIds: number[] = [];
       let variantIds: number[] = [];
 
-      if (shopIds.length > 0) {
+      if (shopIds.length > 0 && (await hasTable('products'))) {
+        const placeholders = shopIds.map(() => '?').join(',');
+
         const products = await queryRunner.query(
           `
           SELECT id
           FROM products
-          WHERE shop_id IN (${shopPlaceholders})
+          WHERE shop_id IN (${placeholders})
           `,
           shopIds,
         );
 
-        productIds = products.map((item: any) => Number(item.id));
+        productIds = products.map((item: any) => Number(item.id)).filter(Boolean);
       }
 
-      const productPlaceholders = productIds.map(() => '?').join(',');
+      if (productIds.length > 0 && (await hasTable('product_variants'))) {
+        const placeholders = productIds.map(() => '?').join(',');
 
-      if (productIds.length > 0) {
         const variants = await queryRunner.query(
           `
           SELECT id
           FROM product_variants
-          WHERE product_id IN (${productPlaceholders})
+          WHERE product_id IN (${placeholders})
           `,
           productIds,
         );
 
-        variantIds = variants.map((item: any) => Number(item.id));
+        variantIds = variants.map((item: any) => Number(item.id)).filter(Boolean);
       }
 
-      const variantPlaceholders = variantIds.map(() => '?').join(',');
+      await updateNullByColumn('orders', 'user_id', id);
+      await updateNullByColumn('product_reviews', 'user_id', id);
+      await updateNullByIds('product_reviews', 'product_id', productIds);
 
-      await queryRunner.query(
-        `
-        UPDATE orders
-        SET user_id = NULL
-        WHERE user_id = ?
-        `,
-        [id],
-      );
+      await deleteByColumn('addresses', 'user_id', id);
+      await deleteByColumn('user_addresses', 'user_id', id);
 
-      await queryRunner.query(
-        `
-        UPDATE product_reviews
-        SET user_id = NULL
-        WHERE user_id = ?
-        `,
-        [id],
-      );
+      await deleteByColumn('product_favorites', 'user_id', id);
+      await deleteByColumn('product_interactions', 'user_id', id);
+      await deleteByColumn('user_category_preferences', 'user_id', id);
+      await deleteByColumn('user_tag_preferences', 'user_id', id);
+      await deleteByColumn('user_product_preferences', 'user_id', id);
+      await deleteByColumn('payment_sessions', 'user_id', id);
 
-      if (productIds.length > 0) {
-        await queryRunner.query(
-          `
-          UPDATE product_reviews
-          SET product_id = NULL
-          WHERE product_id IN (${productPlaceholders})
-          `,
-          productIds,
-        );
-      }
+      await deleteByColumn('carts', 'user_id', id);
 
-      await queryRunner.query(
-        `
-        DELETE ci
-        FROM cart_items ci
-        INNER JOIN carts c ON c.id = ci.cart_id
-        WHERE c.user_id = ?
-        `,
-        [id],
-      );
+      await deleteByIds('cart_items', 'product_id', productIds);
+      await deleteByIds('cart_items', 'variant_id', variantIds);
 
-      await queryRunner.query(
-        `
-        DELETE FROM carts
-        WHERE user_id = ?
-        `,
-        [id],
-      );
+      await deleteByIds('product_favorites', 'product_id', productIds);
+      await deleteByIds('product_interactions', 'product_id', productIds);
+      await deleteByIds('user_product_preferences', 'product_id', productIds);
+      await deleteByIds('product_tags', 'product_id', productIds);
+      await deleteByIds('product_trending', 'product_id', productIds);
+      await deleteByIds('product_variants', 'product_id', productIds);
+      await deleteByIds('product_images', 'product_id', productIds);
+      await deleteByIds('products', 'id', productIds);
 
-      if (productIds.length > 0) {
-        await queryRunner.query(
-          `
-          DELETE FROM cart_items
-          WHERE product_id IN (${productPlaceholders})
-          `,
-          productIds,
-        );
-      }
-
-      if (variantIds.length > 0) {
-        await queryRunner.query(
-          `
-          DELETE FROM cart_items
-          WHERE variant_id IN (${variantPlaceholders})
-          `,
-          variantIds,
-        );
-      }
-
-      await queryRunner.query(
-        `
-        DELETE FROM user_addresses
-        WHERE user_id = ?
-        `,
-        [id],
-      );
-
-      await queryRunner.query(
-        `
-        DELETE FROM product_favorites
-        WHERE user_id = ?
-        `,
-        [id],
-      );
-
-      await queryRunner.query(
-        `
-        DELETE FROM product_interactions
-        WHERE user_id = ?
-        `,
-        [id],
-      );
-
-      await queryRunner.query(
-        `
-        DELETE FROM user_category_preferences
-        WHERE user_id = ?
-        `,
-        [id],
-      );
-
-      await queryRunner.query(
-        `
-        DELETE FROM user_tag_preferences
-        WHERE user_id = ?
-        `,
-        [id],
-      );
-
-      await queryRunner.query(
-        `
-        DELETE FROM user_product_preferences
-        WHERE user_id = ?
-        `,
-        [id],
-      );
-
-      await queryRunner.query(
-        `
-        DELETE FROM payment_sessions
-        WHERE user_id = ?
-        `,
-        [id],
-      );
-
-      if (productIds.length > 0) {
-        await queryRunner.query(
-          `
-          DELETE FROM product_favorites
-          WHERE product_id IN (${productPlaceholders})
-          `,
-          productIds,
-        );
-
-        await queryRunner.query(
-          `
-          DELETE FROM product_interactions
-          WHERE product_id IN (${productPlaceholders})
-          `,
-          productIds,
-        );
-
-        await queryRunner.query(
-          `
-          DELETE FROM user_product_preferences
-          WHERE product_id IN (${productPlaceholders})
-          `,
-          productIds,
-        );
-
-        await queryRunner.query(
-          `
-          DELETE FROM product_tags
-          WHERE product_id IN (${productPlaceholders})
-          `,
-          productIds,
-        );
-
-        await queryRunner.query(
-          `
-          DELETE FROM product_trending
-          WHERE product_id IN (${productPlaceholders})
-          `,
-          productIds,
-        );
-
-        await queryRunner.query(
-          `
-          DELETE FROM product_variants
-          WHERE product_id IN (${productPlaceholders})
-          `,
-          productIds,
-        );
-
-        await queryRunner.query(
-          `
-          DELETE FROM product_images
-          WHERE product_id IN (${productPlaceholders})
-          `,
-          productIds,
-        );
-
-        await queryRunner.query(
-          `
-          DELETE FROM products
-          WHERE id IN (${productPlaceholders})
-          `,
-          productIds,
-        );
-      }
-
-      if (shopIds.length > 0) {
-        await queryRunner.query(
-          `
-          DELETE FROM product_interactions
-          WHERE shop_id IN (${shopPlaceholders})
-          `,
-          shopIds,
-        );
-
-        await queryRunner.query(
-          `
-          DELETE FROM shop_stats
-          WHERE shop_id IN (${shopPlaceholders})
-          `,
-          shopIds,
-        );
-
-        await queryRunner.query(
-          `
-          DELETE FROM shops
-          WHERE id IN (${shopPlaceholders})
-          `,
-          shopIds,
-        );
-      }
+      await deleteByIds('product_interactions', 'shop_id', shopIds);
+      await deleteByIds('shop_stats', 'shop_id', shopIds);
+      await deleteByIds('shops', 'id', shopIds);
 
       await queryRunner.query(
         `
@@ -892,21 +850,10 @@ export class UsersService {
     } catch (e: any) {
       await queryRunner.rollbackTransaction();
 
-      const msg = String(e?.message ?? '');
-
-      if (
-        msg.includes('cannot be null') ||
-        msg.includes('Column') ||
-        msg.includes('foreign key') ||
-        msg.includes('constraint')
-      ) {
-        throw new BadRequestException(
-          'Không thể xóa cứng user vì orders/product_reviews hoặc khóa ngoại chưa cho phép SET NULL. Cần sửa migration các cột user_id/product_id sang nullable và ON DELETE SET NULL.',
-        );
-      }
-
       throw new BadRequestException(
-        'Không thể xóa cứng user vì còn dữ liệu liên quan',
+        e?.sqlMessage ||
+          e?.message ||
+          'Không thể xóa cứng user vì còn dữ liệu liên quan',
       );
     } finally {
       await queryRunner.release();
