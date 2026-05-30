@@ -12,14 +12,15 @@ import {
   Post,
   Query,
   UploadedFile,
+  UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  FileFieldsInterceptor,
+  FileInterceptor,
+} from '@nestjs/platform-express';
 import type { MulterOptions } from '@nestjs/platform-express/multer/interfaces/multer-options.interface';
-import { diskStorage } from 'multer';
-import { extname, join } from 'path';
-import * as fs from 'fs';
-import { randomBytes } from 'crypto';
+import { memoryStorage } from 'multer';
 import type { Express } from 'express';
 
 import { cloudinary } from '../../config/cloudinary.config';
@@ -34,30 +35,83 @@ import { CreateShopDto } from './dto/create-shop.dto';
 import { UpdateShopDto } from './dto/update-shop.dto';
 import { QueryShopDto } from './dto/query-shop.dto';
 import { UpdateShopOrderShippingDto } from './dto/update-shop-order-shipping.dto';
+import { ShopStatus } from './entities/shop.entity';
+
+const MAX_SHOP_IMAGE_SIZE_MB = 5;
 
 const shopUploadOptions: MulterOptions = {
-  storage: diskStorage({
-    destination: (req, file, cb) => {
-      const dir = join(process.cwd(), 'uploads', 'shops');
-      fs.mkdirSync(dir, { recursive: true });
-      cb(null, dir);
-    },
-    filename: (req, file, cb) => {
-      const unique = `${Date.now()}-${randomBytes(6).toString('hex')}`;
-      cb(null, unique + extname(file.originalname).toLowerCase());
-    },
-  }),
-  fileFilter: (req, file, cb) => {
+  storage: memoryStorage(),
+
+  fileFilter: (_req, file, cb) => {
     if (!/^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)) {
       return cb(
-        new BadRequestException('Chỉ chấp nhận ảnh (jpeg, png, webp, gif)'),
+        new BadRequestException('Chỉ chấp nhận ảnh jpeg, png, webp hoặc gif'),
         false,
       );
     }
+
     cb(null, true);
   },
-  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+
+  limits: {
+    fileSize: MAX_SHOP_IMAGE_SIZE_MB * 1024 * 1024,
+    files: 2,
+  },
 };
+
+function uploadShopImageToCloudinary(
+  file: Express.Multer.File,
+  folder: string,
+  label: string,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!process.env.CLOUDINARY_CLOUD_NAME) {
+      return reject(
+        new BadRequestException('Thiếu CLOUDINARY_CLOUD_NAME trên server deploy'),
+      );
+    }
+
+    if (!process.env.CLOUDINARY_API_KEY) {
+      return reject(
+        new BadRequestException('Thiếu CLOUDINARY_API_KEY trên server deploy'),
+      );
+    }
+
+    if (!process.env.CLOUDINARY_API_SECRET) {
+      return reject(
+        new BadRequestException('Thiếu CLOUDINARY_API_SECRET trên server deploy'),
+      );
+    }
+
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        resource_type: 'image',
+      },
+      (error, result) => {
+        if (error) {
+          console.error(`Cloudinary ${label} upload error:`, error);
+
+          return reject(
+            new BadRequestException(
+              error.message || `Upload ${label} lên Cloudinary thất bại`,
+            ),
+          );
+        }
+
+        if (!result?.secure_url) {
+          return reject(
+            new BadRequestException('Cloudinary không trả về secure_url'),
+          );
+        }
+
+        resolve(result.secure_url);
+      },
+    );
+
+    uploadStream.end(file.buffer);
+  });
+}
 
 @Controller('shops')
 export class ShopsController {
@@ -65,38 +119,109 @@ export class ShopsController {
 
   @Roles(AppRole.USER, AppRole.ADMIN)
   @Post('register')
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'logo', maxCount: 1 },
+        { name: 'cover', maxCount: 1 },
+      ],
+      shopUploadOptions,
+    ),
+  )
   async register(
     @CurrentUser('sub') userSub: number,
     @Body() dto: CreateShopDto,
+    @UploadedFiles()
+    files?: {
+      logo?: Express.Multer.File[];
+      cover?: Express.Multer.File[];
+    },
   ) {
     const userId = Number(userSub);
-    const shop = await this.shopsService.registerForUser(userId, dto);
-    return { success: true, data: shop };
+
+    const logoFile = files?.logo?.[0];
+    const coverFile = files?.cover?.[0];
+
+    let logoUrl = dto.logoUrl;
+    let coverUrl = dto.coverUrl;
+
+    if (logoFile) {
+      logoUrl = await uploadShopImageToCloudinary(
+        logoFile,
+        'mini-e/shops/logo',
+        'logo shop',
+      );
+    }
+
+    if (coverFile) {
+      coverUrl = await uploadShopImageToCloudinary(
+        coverFile,
+        'mini-e/shops/cover',
+        'ảnh bìa shop',
+      );
+    }
+
+    const shop = await this.shopsService.registerForUser(userId, {
+      ...dto,
+      logoUrl,
+      coverUrl,
+    });
+
+    return {
+      success: true,
+      message: 'Đăng ký shop thành công, vui lòng chờ admin duyệt.',
+      data: shop,
+    };
   }
 
+  @Public()
   @Get('check-name')
   async checkName(@Query('name') name: string) {
     const exists = await this.shopsService.nameExists(String(name || '').trim());
-    return { success: true, data: { exists } };
+
+    return {
+      success: true,
+      data: { exists },
+    };
   }
 
   @Roles(AppRole.ADMIN)
-  @Get()
-  async findAll(@Query() query: QueryShopDto) {
+  @Get('admin/all')
+  async findAllForAdmin(@Query() query: QueryShopDto) {
     const data = await this.shopsService.findAll(query);
-    return { success: true, data };
+
+    return {
+      success: true,
+      data,
+    };
   }
 
-  // USER vẫn xem được shop của mình khi còn PENDING
+  @Public()
+  @Get()
+  async findPublic(@Query() query: QueryShopDto) {
+    const data = await this.shopsService.findAll({
+      ...query,
+      status: ShopStatus.ACTIVE,
+    });
+
+    return {
+      success: true,
+      data,
+    };
+  }
+
   @Roles(AppRole.USER, AppRole.SELLER, AppRole.ADMIN)
   @Get('me')
   async myShop(@CurrentUser('sub') userSub: number) {
     const userId = Number(userSub);
     const shop = await this.shopsService.findMine(userId);
-    return { success: true, data: shop };
+
+    return {
+      success: true,
+      data: shop,
+    };
   }
 
-  // Chỉ SELLER/ADMIN mới xử lý đơn hàng
   @Roles(AppRole.SELLER, AppRole.ADMIN)
   @Get('me/orders')
   async myShopOrders(
@@ -109,14 +234,12 @@ export class ShopsController {
     const p = Math.max(1, parseInt(page || '1', 10));
     const l = Math.max(1, Math.min(1000, parseInt(limit || '20', 10)));
 
-    const data = await this.shopsService.listMyShopOrders(
-      userId,
-      p,
-      l,
-      range,
-    );
+    const data = await this.shopsService.listMyShopOrders(userId, p, l, range);
 
-    return { success: true, data };
+    return {
+      success: true,
+      data,
+    };
   }
 
   @Roles(AppRole.SELLER, AppRole.ADMIN)
@@ -127,7 +250,11 @@ export class ShopsController {
   ) {
     const userId = Number(userSub);
     const data = await this.shopsService.getMyShopOrderDetail(userId, id);
-    return { success: true, data };
+
+    return {
+      success: true,
+      data,
+    };
   }
 
   @Roles(AppRole.SELLER, AppRole.ADMIN)
@@ -138,15 +265,19 @@ export class ShopsController {
     @Body() dto: UpdateShopOrderShippingDto,
   ) {
     const userId = Number(userSub);
+
     const data = await this.shopsService.updateMyShopOrderShippingStatus(
       userId,
       id,
       dto.shippingStatus,
     );
-    return { success: true, data };
+
+    return {
+      success: true,
+      data,
+    };
   }
 
-  // USER vẫn cập nhật được logo/cover khi shop còn PENDING
   @Roles(AppRole.USER, AppRole.SELLER, AppRole.ADMIN)
   @Patch('me/logo')
   @UseInterceptors(FileInterceptor('file', shopUploadOptions))
@@ -155,14 +286,24 @@ export class ShopsController {
     @UploadedFile() file: Express.Multer.File,
   ) {
     const userId = Number(userSub);
-    if (!file) throw new BadRequestException('Vui lòng chọn ảnh.');
 
-    const uploaded = await cloudinary.uploader.upload((file as any).path, {
-      folder: 'mini-e/shops/logo',
-    });
+    if (!file) {
+      throw new BadRequestException('Vui lòng chọn ảnh logo.');
+    }
 
-    const shop = await this.shopsService.updateLogoUrl(userId, uploaded.secure_url);
-    return { success: true, data: shop };
+    const logoUrl = await uploadShopImageToCloudinary(
+      file,
+      'mini-e/shops/logo',
+      'logo shop',
+    );
+
+    const shop = await this.shopsService.updateLogoUrl(userId, logoUrl);
+
+    return {
+      success: true,
+      message: 'Cập nhật logo shop thành công',
+      data: shop,
+    };
   }
 
   @Roles(AppRole.USER, AppRole.SELLER, AppRole.ADMIN)
@@ -173,31 +314,58 @@ export class ShopsController {
     @UploadedFile() file: Express.Multer.File,
   ) {
     const userId = Number(userSub);
-    if (!file) throw new BadRequestException('Vui lòng chọn ảnh.');
 
-    const uploaded = await cloudinary.uploader.upload((file as any).path, {
-      folder: 'mini-e/shops/cover',
-    });
+    if (!file) {
+      throw new BadRequestException('Vui lòng chọn ảnh bìa.');
+    }
 
-    const shop = await this.shopsService.updateCoverUrl(userId, uploaded.secure_url);
-    return { success: true, data: shop };
+    const coverUrl = await uploadShopImageToCloudinary(
+      file,
+      'mini-e/shops/cover',
+      'ảnh bìa shop',
+    );
+
+    const shop = await this.shopsService.updateCoverUrl(userId, coverUrl);
+
+    return {
+      success: true,
+      message: 'Cập nhật ảnh bìa shop thành công',
+      data: shop,
+    };
   }
 
   @Public()
   @Get(':id')
   async findOne(@Param('id', ParseIntPipe) id: number) {
     const shop = await this.shopsService.findOnePublic(id);
-    return { success: true, data: shop };
+
+    return {
+      success: true,
+      data: shop,
+    };
   }
 
-  // USER vẫn sửa được hồ sơ shop của mình khi còn PENDING
   @Roles(AppRole.USER, AppRole.SELLER, AppRole.ADMIN)
   @Patch(':id')
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'logo', maxCount: 1 },
+        { name: 'cover', maxCount: 1 },
+      ],
+      shopUploadOptions,
+    ),
+  )
   async update(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser('sub') userSub: number,
     @CurrentUser('role') role: AppRole,
     @Body() dto: UpdateShopDto,
+    @UploadedFiles()
+    files?: {
+      logo?: Express.Multer.File[];
+      cover?: Express.Multer.File[];
+    },
   ) {
     const userId = Number(userSub);
 
@@ -205,12 +373,44 @@ export class ShopsController {
       throw new ForbiddenException('Chỉ ADMIN được đổi trạng thái shop.');
     }
 
+    const logoFile = files?.logo?.[0];
+    const coverFile = files?.cover?.[0];
+
+    let logoUrl = dto.logoUrl;
+    let coverUrl = dto.coverUrl;
+
+    if (logoFile) {
+      logoUrl = await uploadShopImageToCloudinary(
+        logoFile,
+        'mini-e/shops/logo',
+        'logo shop',
+      );
+    }
+
+    if (coverFile) {
+      coverUrl = await uploadShopImageToCloudinary(
+        coverFile,
+        'mini-e/shops/cover',
+        'ảnh bìa shop',
+      );
+    }
+
+    const payload: UpdateShopDto = {
+      ...dto,
+      logoUrl,
+      coverUrl,
+    };
+
     const shop =
       role === AppRole.ADMIN
-        ? await this.shopsService.updateShopAsAdmin(id, dto)
-        : await this.shopsService.updateShopAsOwner(id, userId, dto);
+        ? await this.shopsService.updateShopAsAdmin(id, payload)
+        : await this.shopsService.updateShopAsOwner(id, userId, payload);
 
-    return { success: true, data: shop };
+    return {
+      success: true,
+      message: 'Cập nhật shop thành công',
+      data: shop,
+    };
   }
 
   @Roles(AppRole.USER, AppRole.SELLER, AppRole.ADMIN)
@@ -228,6 +428,19 @@ export class ShopsController {
       await this.shopsService.removeShopAsOwner(id, userId);
     }
 
-    return { success: true };
+    return {
+      success: true,
+      message: 'Xóa shop thành công',
+    };
+  }
+  @Roles(AppRole.ADMIN)
+  @Get('admin/stats')
+  async getAdminStats() {
+    const data = await this.shopsService.getAdminStats();
+
+    return {
+      success: true,
+      data,
+    };
   }
 }

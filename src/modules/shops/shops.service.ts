@@ -43,8 +43,6 @@ export class ShopsService {
     private readonly ordersRepo: Repository<Order>,
   ) {}
 
-  // ---------------- common utils ----------------
-
   private slugify(input: string): string {
     const base = (input ?? '')
       .toLowerCase()
@@ -87,12 +85,6 @@ export class ShopsService {
     return !!found;
   }
 
-  private toFixedOrNull(v?: number, digits = 7): string | null {
-    return typeof v === 'number' && Number.isFinite(v)
-      ? v.toFixed(digits)
-      : null;
-  }
-
   private normalizeOptionalText(value?: string | null): string | null {
     if (value === undefined || value === null) return null;
 
@@ -100,8 +92,38 @@ export class ShopsService {
     return trimmed ? trimmed : null;
   }
 
+  private requireText(value: unknown, message: string): string {
+    const text = String(value ?? '').trim();
+
+    if (!text) {
+      throw new BadRequestException(message);
+    }
+
+    return text;
+  }
+
+  private toNumberOrThrow(value: unknown, message: string): number {
+    const n = Number(value);
+
+    if (!Number.isFinite(n)) {
+      throw new BadRequestException(message);
+    }
+
+    return n;
+  }
+
+  private toFixedOrNull(value?: number | string | null, digits = 7): string | null {
+    if (value === undefined || value === null || value === '') return null;
+
+    const n = Number(value);
+
+    return Number.isFinite(n) ? n.toFixed(digits) : null;
+  }
+
   private async getShopOrThrow(id: number) {
-    const shop = await this.shopsRepo.findOne({ where: { id } });
+    const shop = await this.shopsRepo.findOne({
+      where: { id },
+    });
 
     if (!shop) {
       throw new NotFoundException('Không tìm thấy shop.');
@@ -122,6 +144,7 @@ export class ShopsService {
     });
 
     shop.stats = await this.statsRepo.save(stats);
+
     return shop.stats;
   }
 
@@ -191,8 +214,6 @@ export class ShopsService {
     }
   }
 
-  // ---------------- shop order management ----------------
-
   private async syncCodPaymentPaidForDeliveredOrders(orderIds: string[]) {
     if (!orderIds.length) return;
 
@@ -218,17 +239,17 @@ export class ShopsService {
     );
   }
 
-private normalizeOrderRange(range?: string) {
-  const value = String(range || 'all').trim().toLowerCase();
+  private normalizeOrderRange(range?: string) {
+    const value = String(range || 'all').trim().toLowerCase();
 
-  if (value === '1' || value === '7' || value === '30' || value === 'all') {
-    return value;
+    if (value === '1' || value === '7' || value === '30' || value === 'all') {
+      return value;
+    }
+
+    throw new BadRequestException(
+      'range không hợp lệ. Chỉ nhận 1, 7, 30 hoặc all.',
+    );
   }
-
-  throw new BadRequestException(
-    'range không hợp lệ. Chỉ nhận 1, 7, 30 hoặc all.',
-  );
-}
 
   private getOrderRangeSql(range?: string) {
     const normalizedRange = this.normalizeOrderRange(range);
@@ -238,32 +259,18 @@ private normalizeOrderRange(range?: string) {
     }
 
     if (normalizedRange === '1') {
-      // Hôm nay: từ 00:00 hôm nay đến hiện tại
       return 'o.created_at >= CURDATE()';
     }
 
     if (normalizedRange === '7') {
-      // 7 ngày theo lịch: hôm nay + 6 ngày trước
       return 'o.created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)';
     }
 
     if (normalizedRange === '30') {
-      // 30 ngày theo lịch: hôm nay + 29 ngày trước
       return 'o.created_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)';
     }
 
     return '';
-  }
-
-  private getRangeFromDate(range?: string): Date | null {
-    const normalizedRange = this.normalizeOrderRange(range);
-
-    if (normalizedRange === 'all') return null;
-
-    const fromDate = new Date();
-    fromDate.setDate(fromDate.getDate() - Number(normalizedRange));
-
-    return fromDate;
   }
 
   async listMyShopOrders(
@@ -286,8 +293,8 @@ private normalizeOrderRange(range?: string) {
     }
 
     const shopId = Number((shop as any).id);
+    const rangeSql = this.getOrderRangeSql(range);
 
-   const rangeSql = this.getOrderRangeSql(range);
     const safePage = Math.max(1, Number(page) || 1);
     const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 20));
 
@@ -324,8 +331,8 @@ private normalizeOrderRange(range?: string) {
     if (rangeSql) {
       totalQuery.andWhere(rangeSql);
     }
-    const totalRow = await totalQuery.getRawOne<{ cnt: string }>();
 
+    const totalRow = await totalQuery.getRawOne<{ cnt: string }>();
     const total = Number(totalRow?.cnt || 0);
 
     if (!ids.length) {
@@ -481,15 +488,20 @@ private normalizeOrderRange(range?: string) {
     return this.ordersRepo.save(order as any);
   }
 
-  // ---------------- shop register / read / update / delete ----------------
-
-  async registerForUser(userId: number, dto: CreateShopDto) {
+  async registerForUser(
+    userId: number,
+    dto: CreateShopDto & {
+      logoUrl?: string | null;
+      coverUrl?: string | null;
+    },
+  ) {
     if (!userId) {
       throw new ForbiddenException('Không xác định được user từ token.');
     }
 
     const existed = await this.shopsRepo.findOne({
       where: { userId },
+      withDeleted: true,
     });
 
     if (existed) {
@@ -498,10 +510,39 @@ private normalizeOrderRange(range?: string) {
       );
     }
 
-    const cleanName = String(dto.name || '').trim();
+    const cleanName = this.requireText(dto.name, 'Tên shop không được để trống.');
+    const email = this.requireText(dto.email, 'Email shop không được để trống.');
+    const description = this.requireText(
+      dto.description,
+      'Mô tả shop không được để trống.',
+    );
+    const shopAddress = this.requireText(
+      dto.shopAddress,
+      'Địa chỉ shop không được để trống.',
+    );
+    const shopPhone = this.requireText(
+      dto.shopPhone,
+      'Số điện thoại shop không được để trống.',
+    );
 
-    if (!cleanName) {
-      throw new BadRequestException('Tên shop không được để trống.');
+    const shopLatNumber = this.toNumberOrThrow(
+      dto.shopLat,
+      'shopLat không được để trống và phải là số hợp lệ.',
+    );
+
+    const shopLngNumber = this.toNumberOrThrow(
+      dto.shopLng,
+      'shopLng không được để trống và phải là số hợp lệ.',
+    );
+
+    if (shopLatNumber < -90 || shopLatNumber > 90) {
+      throw new BadRequestException('shopLat phải nằm trong khoảng -90 đến 90.');
+    }
+
+    if (shopLngNumber < -180 || shopLngNumber > 180) {
+      throw new BadRequestException(
+        'shopLng phải nằm trong khoảng -180 đến 180.',
+      );
     }
 
     if (await this.nameExists(cleanName)) {
@@ -525,17 +566,20 @@ private normalizeOrderRange(range?: string) {
       const shop = shopRepo.create({
         userId,
         name: cleanName,
-        email: this.normalizeOptionalText(dto.email),
-        description: this.normalizeOptionalText(dto.description),
+        email,
+        description,
         slug,
         status: ShopStatus.PENDING,
         verifiedAt: null,
 
-        shopAddress: this.normalizeOptionalText(dto.shopAddress),
-        shopLat: this.toFixedOrNull(dto.shopLat),
-        shopLng: this.toFixedOrNull(dto.shopLng),
+        logoUrl: this.normalizeOptionalText(dto.logoUrl),
+        coverUrl: this.normalizeOptionalText(dto.coverUrl),
+
+        shopAddress,
+        shopLat: this.toFixedOrNull(shopLatNumber),
+        shopLng: this.toFixedOrNull(shopLngNumber),
         shopPlaceId: this.normalizeOptionalText(dto.shopPlaceId),
-        shopPhone: this.normalizeOptionalText(dto.shopPhone),
+        shopPhone,
       });
 
       await shopRepo.save(shop);
@@ -557,6 +601,9 @@ private normalizeOrderRange(range?: string) {
   async findAll(query: QueryShopDto) {
     const { q, status, page = 1, limit = 20 } = query;
 
+    const safePage = Math.max(1, Number(page) || 1);
+    const safeLimit = Math.max(1, Math.min(100, Number(limit) || 20));
+
     const likeInsensitive = (s: string) => ILike(`%${s}%`);
 
     const where = q
@@ -573,8 +620,8 @@ private normalizeOrderRange(range?: string) {
     const [items, total] = await this.shopsRepo.findAndCount({
       where,
       order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
+      skip: (safePage - 1) * safeLimit,
+      take: safeLimit,
       relations: { stats: true },
     });
 
@@ -582,8 +629,8 @@ private normalizeOrderRange(range?: string) {
 
     return {
       items: mapped,
-      page,
-      limit,
+      page: safePage,
+      limit: safeLimit,
       total,
     };
   }
@@ -684,6 +731,14 @@ private normalizeOrderRange(range?: string) {
       shop.description = this.normalizeOptionalText(dto.description);
     }
 
+    if (dto.logoUrl !== undefined) {
+      shop.logoUrl = this.normalizeOptionalText(dto.logoUrl);
+    }
+
+    if (dto.coverUrl !== undefined) {
+      shop.coverUrl = this.normalizeOptionalText(dto.coverUrl);
+    }
+
     if (dto.shopAddress !== undefined) {
       shop.shopAddress = this.normalizeOptionalText(dto.shopAddress);
     }
@@ -758,48 +813,48 @@ private normalizeOrderRange(range?: string) {
         }
       }
 
+      /*
+        cart_items đang dùng camelCase:
+        - productId
+        - variantId
+        - cartId
+
+        Bảng này không có FK tới products, nên phải tự xóa item giỏ hàng
+        trước khi product bị xóa cascade theo shop.
+      */
       await trx.query(
         `
-        DELETE pf
-        FROM product_favorites pf
-        INNER JOIN products p ON p.id = pf.product_id
+        DELETE ci
+        FROM cart_items ci
+        INNER JOIN products p ON p.id = ci.productId
         WHERE p.shop_id = ?
         `,
         [currentShop.id],
       );
 
-      await trx.query(
-        `
-        DELETE pi
-        FROM product_interactions pi
-        INNER JOIN products p ON p.id = pi.product_id
-        WHERE p.shop_id = ?
-        `,
-        [currentShop.id],
-      );
+      /*
+        Không xóa order_items.
+        order_items là snapshot lịch sử đơn hàng, không FK tới products.
+        Nếu xóa ở đây thì đơn cũ sẽ mất chi tiết sản phẩm.
+      */
 
-      await trx.query(
-        `
-        DELETE pr
-        FROM product_reviews pr
-        INNER JOIN products p ON p.id = pr.product_id
-        WHERE p.shop_id = ?
-        `,
-        [currentShop.id],
-      );
+      /*
+        Không cần tự xóa:
+        - product_images
+        - product_variants
+        - product_reviews
+        - product_favorites
+        - product_interactions
+        - product_tags
+        - product_trending
+        - user_product_preferences
+        - shop_stats
 
-      await trx.query(
-        `
-        DELETE FROM products
-        WHERE shop_id = ?
-        `,
-        [currentShop.id],
-      );
-
+        Vì DB đã có cascade theo products/shop.
+      */
       await shopRepo.delete({ id: currentShop.id });
     });
   }
-
   private async withStats(shopId: number, includeRevenue: boolean) {
     const shop = await this.shopsRepo.findOne({
       where: { id: shopId },
@@ -813,6 +868,28 @@ private normalizeOrderRange(range?: string) {
     await this.ensureStatsForShop(shop);
 
     return this.mapShopWithStats(shop, includeRevenue);
+  }
+
+  async getAdminStats() {
+    const [total, pending, active, suspended] = await Promise.all([
+      this.shopsRepo.count(),
+      this.shopsRepo.count({
+        where: { status: ShopStatus.PENDING },
+      }),
+      this.shopsRepo.count({
+        where: { status: ShopStatus.ACTIVE },
+      }),
+      this.shopsRepo.count({
+        where: { status: ShopStatus.SUSPENDED },
+      }),
+    ]);
+
+    return {
+      total,
+      pending,
+      active,
+      suspended,
+    };
   }
 
   async updateLogoUrl(userId: number, logoUrl: string) {
