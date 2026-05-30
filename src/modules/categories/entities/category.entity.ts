@@ -1,14 +1,14 @@
 import {
-  Entity,
-  PrimaryGeneratedColumn,
   Column,
+  CreateDateColumn,
+  DeleteDateColumn,
+  Entity,
   Index,
+  JoinColumn,
   ManyToOne,
   OneToMany,
-  JoinColumn,
-  CreateDateColumn,
+  PrimaryGeneratedColumn,
   UpdateDateColumn,
-  DeleteDateColumn,
 } from 'typeorm';
 import { Product } from '../../products/entities/product.entity';
 
@@ -20,17 +20,15 @@ export class Category {
   @PrimaryGeneratedColumn({ type: 'int', unsigned: true })
   id!: number;
 
-  @Column({ length: 120 })
+  @Column({ type: 'varchar', length: 120 })
   name!: string;
 
-  @Column({ length: 160 })
+  @Column({ type: 'varchar', length: 160 })
   slug!: string;
 
   @Column({ type: 'text', nullable: true })
   description?: string | null;
 
-  // Ảnh chính của danh mục.
-  // DB column: image_url
   @Column({ name: 'image_url', type: 'varchar', length: 500, nullable: true })
   imageUrl?: string | null;
 

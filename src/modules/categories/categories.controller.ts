@@ -18,8 +18,8 @@ import { memoryStorage } from 'multer';
 import type { Express } from 'express';
 
 import { cloudinary } from '../../config/cloudinary.config';
-import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Public } from '../../common/decorators/public.decorator';
 import { UserRole } from '../users/enums/user.enum';
 import { CategoriesService } from './categories.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
@@ -29,9 +29,6 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 const MAX_CATEGORY_IMAGE_SIZE_MB = 2;
 
 const uploadOptions: MulterOptions = {
-  // Dùng memoryStorage giống products.controller:
-  // ảnh nằm trong RAM qua file.buffer,
-  // không lưu vào thư mục local.
   storage: memoryStorage(),
 
   fileFilter: (_req, file, cb) => {
@@ -51,19 +48,24 @@ const uploadOptions: MulterOptions = {
   },
 };
 
-// Upload ảnh từ RAM buffer lên Cloudinary.
 function uploadBufferToCloudinary(file: Express.Multer.File): Promise<string> {
   return new Promise((resolve, reject) => {
     if (!process.env.CLOUDINARY_CLOUD_NAME) {
-      return reject(new BadRequestException('Thiếu CLOUDINARY_CLOUD_NAME trên server deploy'));
+      return reject(
+        new BadRequestException('Thiếu CLOUDINARY_CLOUD_NAME trên server'),
+      );
     }
 
     if (!process.env.CLOUDINARY_API_KEY) {
-      return reject(new BadRequestException('Thiếu CLOUDINARY_API_KEY trên server deploy'));
+      return reject(
+        new BadRequestException('Thiếu CLOUDINARY_API_KEY trên server'),
+      );
     }
 
     if (!process.env.CLOUDINARY_API_SECRET) {
-      return reject(new BadRequestException('Thiếu CLOUDINARY_API_SECRET trên server deploy'));
+      return reject(
+        new BadRequestException('Thiếu CLOUDINARY_API_SECRET trên server'),
+      );
     }
 
     const uploadStream = cloudinary.uploader.upload_stream(
@@ -83,7 +85,9 @@ function uploadBufferToCloudinary(file: Express.Multer.File): Promise<string> {
         }
 
         if (!result?.secure_url) {
-          return reject(new BadRequestException('Cloudinary không trả về secure_url'));
+          return reject(
+            new BadRequestException('Cloudinary không trả về secure_url'),
+          );
         }
 
         resolve(result.secure_url);
@@ -98,11 +102,14 @@ function uploadBufferToCloudinary(file: Express.Multer.File): Promise<string> {
 export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 
-  // Public: user, seller, guest đều xem được category active
+  /**
+   * Public cho trang home:
+   * chỉ lấy category gốc trên cùng parent_id IS NULL và is_active = true.
+   */
   @Public()
   @Get()
-  async list(@Query() query: SearchCategoriesDto) {
-    const data = await this.categoriesService.findAllPublic(query);
+  async homeAlias() {
+    const data = await this.categoriesService.findHomeRootCategories();
 
     return {
       success: true,
@@ -111,9 +118,55 @@ export class CategoriesController {
   }
 
   @Public()
+  @Get('home')
+  async home() {
+    const data = await this.categoriesService.findHomeRootCategories();
+
+    return {
+      success: true,
+      data,
+    };
+  }
+
+  /**
+   * Public tree nếu sau này FE cần menu dạng cây.
+   * Trang home không nên dùng API này nếu chỉ muốn category cha.
+   */
+  @Public()
   @Get('tree')
   async tree() {
-    const data = await this.categoriesService.findTreePublic();
+    const data = await this.categoriesService.findActiveTree();
+
+    return {
+      success: true,
+      data,
+    };
+  }
+
+  /**
+   * Seller/Admin dùng khi thêm sản phẩm:
+   * lấy tất cả category active, gồm cha/con/cháu.
+   */
+  @Get('seller-options')
+  async sellerOptions(@CurrentUser('role') role: UserRole) {
+    const data = await this.categoriesService.findSellerOptions(role);
+
+    return {
+      success: true,
+      data,
+    };
+  }
+
+  /**
+   * Admin quản lý category:
+   * lấy tất cả category, có search/lọc/phân trang.
+   */
+  @Get('admin')
+  async adminList(
+    @CurrentUser('role') role: UserRole,
+    @Query() query: SearchCategoriesDto,
+  ) {
+    const data = await this.categoriesService.findAllForAdmin(role, query);
 
     return {
       success: true,
@@ -132,8 +185,10 @@ export class CategoriesController {
     };
   }
 
-  // Admin only
-  // FE gửi multipart/form-data với field ảnh tên là: image
+  /**
+   * Admin tạo category.
+   * FE gửi multipart/form-data, field ảnh tên là: image
+   */
   @Post()
   @UseInterceptors(FileInterceptor('image', uploadOptions))
   async create(
@@ -159,6 +214,11 @@ export class CategoriesController {
     };
   }
 
+  /**
+   * Admin sửa category.
+   * Nếu gửi imageUrl = null hoặc '' thì xóa ảnh cũ.
+   * Nếu upload file mới thì imageUrl được thay bằng URL Cloudinary.
+   */
   @Patch(':id')
   @UseInterceptors(FileInterceptor('image', uploadOptions))
   async update(
@@ -185,6 +245,12 @@ export class CategoriesController {
     };
   }
 
+  /**
+   * Admin xóa mềm category.
+   * Khi xóa mềm:
+   * - category con sẽ được đưa lên thành category gốc
+   * - sản phẩm đang gắn category này sẽ được set categoryId = null
+   */
   @Delete(':id')
   async remove(
     @CurrentUser('role') role: UserRole,

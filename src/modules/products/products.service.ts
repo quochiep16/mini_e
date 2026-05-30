@@ -270,6 +270,228 @@ export class ProductsService {
     return category.id;
   }
 
+  private async getCategoryAndDescendantIds(categoryId: number): Promise<number[]> {
+    const id = Number(categoryId);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new BadRequestException('categoryId không hợp lệ');
+    }
+
+    const root = await this.categoriesRepo.findOne({
+      where: {
+        id,
+        isActive: true,
+        deletedAt: IsNull(),
+      } as any,
+    });
+
+    if (!root) {
+      throw new BadRequestException('categoryId không tồn tại hoặc đang bị tắt');
+    }
+
+    const ids = new Set<number>([id]);
+    let currentLevelIds = [id];
+
+    while (currentLevelIds.length > 0) {
+      const children = await this.categoriesRepo.find({
+        where: {
+          parentId: In(currentLevelIds),
+          isActive: true,
+          deletedAt: IsNull(),
+        } as any,
+        select: ['id'] as any,
+      });
+
+      const nextLevelIds = children
+        .map((category) => category.id)
+        .filter((childId) => !ids.has(childId));
+
+      for (const childId of nextLevelIds) {
+        ids.add(childId);
+      }
+
+      currentLevelIds = nextLevelIds;
+    }
+
+    return Array.from(ids);
+  }
+
+  private quoteIdentifier(identifier: string): string {
+    return `\`${identifier.replace(/`/g, '``')}\``;
+  }
+
+  private async tableExists(manager: EntityManager, tableName: string): Promise<boolean> {
+    const rows = await manager.query(
+      `
+      SELECT 1 AS ok
+      FROM information_schema.tables
+      WHERE table_schema = DATABASE()
+        AND table_name = ?
+      LIMIT 1
+      `,
+      [tableName],
+    );
+
+    return rows.length > 0;
+  }
+
+  private async getExistingColumnName(
+    manager: EntityManager,
+    tableName: string,
+    candidates: string[],
+  ): Promise<string | null> {
+    const rows = await manager.query(
+      `
+      SELECT column_name AS columnName
+      FROM information_schema.columns
+      WHERE table_schema = DATABASE()
+        AND table_name = ?
+        AND column_name IN (${candidates.map(() => '?').join(', ')})
+      `,
+      [tableName, ...candidates],
+    );
+
+    const existing = new Set(
+      rows.map((row: any) => String(row.columnName ?? row.COLUMN_NAME)),
+    );
+
+    return candidates.find((candidate) => existing.has(candidate)) ?? null;
+  }
+
+  private async cleanupDeletedProductFromCarts(
+    manager: EntityManager,
+    productId: number,
+  ): Promise<void> {
+    const hasCartItems = await this.tableExists(manager, 'cart_items');
+
+    if (!hasCartItems) return;
+
+    const cartIdColumn = await this.getExistingColumnName(manager, 'cart_items', [
+      'cartId',
+      'cart_id',
+    ]);
+    const productIdColumn = await this.getExistingColumnName(manager, 'cart_items', [
+      'productId',
+      'product_id',
+    ]);
+
+    if (!cartIdColumn || !productIdColumn) return;
+
+    const cartIdSql = this.quoteIdentifier(cartIdColumn);
+    const productIdSql = this.quoteIdentifier(productIdColumn);
+
+    const affectedCarts = await manager.query(
+      `
+      SELECT DISTINCT ${cartIdSql} AS cartId
+      FROM cart_items
+      WHERE ${productIdSql} = ?
+      `,
+      [productId],
+    );
+
+    const affectedCartIds = affectedCarts
+      .map((row: any) => Number(row.cartId))
+      .filter((cartId: number) => Number.isInteger(cartId) && cartId > 0);
+
+    await manager.query(
+      `
+      DELETE FROM cart_items
+      WHERE ${productIdSql} = ?
+      `,
+      [productId],
+    );
+
+    if (!affectedCartIds.length) return;
+
+    const hasCarts = await this.tableExists(manager, 'carts');
+
+    if (!hasCarts) return;
+
+    const quantityColumn = await this.getExistingColumnName(manager, 'cart_items', [
+      'quantity',
+      'qty',
+    ]);
+    const priceColumn = await this.getExistingColumnName(manager, 'cart_items', [
+      'price',
+      'unitPrice',
+      'unit_price',
+    ]);
+
+    const cartItemsCountColumn = await this.getExistingColumnName(manager, 'carts', [
+      'itemsCount',
+      'items_count',
+    ]);
+    const cartItemsQuantityColumn = await this.getExistingColumnName(manager, 'carts', [
+      'itemsQuantity',
+      'items_quantity',
+      'totalQuantity',
+      'total_quantity',
+    ]);
+    const cartSubtotalColumn = await this.getExistingColumnName(manager, 'carts', [
+      'subtotal',
+      'sub_total',
+      'total',
+      'totalPrice',
+      'total_price',
+    ]);
+
+    for (const cartId of affectedCartIds) {
+      const quantityExpr = quantityColumn
+        ? `COALESCE(SUM(${this.quoteIdentifier(quantityColumn)}), 0)`
+        : '0';
+
+      const subtotalExpr =
+        quantityColumn && priceColumn
+          ? `COALESCE(SUM(${this.quoteIdentifier(priceColumn)} * ${this.quoteIdentifier(
+              quantityColumn,
+            )}), 0)`
+          : '0';
+
+      const [summary] = await manager.query(
+        `
+        SELECT
+          COUNT(*) AS itemsCount,
+          ${quantityExpr} AS itemsQuantity,
+          ${subtotalExpr} AS subtotal
+        FROM cart_items
+        WHERE ${cartIdSql} = ?
+        `,
+        [cartId],
+      );
+
+      const sets: string[] = [];
+      const params: any[] = [];
+
+      if (cartItemsCountColumn) {
+        sets.push(`${this.quoteIdentifier(cartItemsCountColumn)} = ?`);
+        params.push(Number(summary?.itemsCount ?? 0));
+      }
+
+      if (cartItemsQuantityColumn) {
+        sets.push(`${this.quoteIdentifier(cartItemsQuantityColumn)} = ?`);
+        params.push(Number(summary?.itemsQuantity ?? 0));
+      }
+
+      if (cartSubtotalColumn) {
+        sets.push(`${this.quoteIdentifier(cartSubtotalColumn)} = ?`);
+        params.push(Number(summary?.subtotal ?? 0));
+      }
+
+      if (!sets.length) continue;
+
+      params.push(cartId);
+
+      await manager.query(
+        `
+        UPDATE carts
+        SET ${sets.join(', ')}
+        WHERE id = ?
+        `,
+        params,
+      );
+    }
+  }
+
   private async getMainImageMap(productIds: number[]) {
     if (!productIds.length) return new Map<number, string>();
 
@@ -294,10 +516,11 @@ export class ProductsService {
     const ids = items.map((item) => item.id);
     const imageMap = await this.getMainImageMap(ids);
 
-    return items.map((item) => ({
-      ...item,
-      mainImageUrl: imageMap.get(item.id) ?? null,
-    }));
+    return items.map((item) => {
+      const productWithImage = item as ProductWithImages;
+      productWithImage.mainImageUrl = imageMap.get(item.id) ?? null;
+      return productWithImage;
+    });
   }
 
   private mapVariantRows(schema: Opt[], variants: ProductVariant[]) {
@@ -608,7 +831,11 @@ export class ProductsService {
     }
 
     if (query.categoryId) {
-      qb.andWhere('p.categoryId = :categoryId', { categoryId: query.categoryId });
+      const categoryIds = await this.getCategoryAndDescendantIds(
+        Number(query.categoryId),
+      );
+
+      qb.andWhere('p.categoryId IN (:...categoryIds)', { categoryIds });
     }
 
     if (q) {
@@ -703,9 +930,11 @@ export class ProductsService {
     }
 
     if (query.categoryId) {
-      qb.andWhere('p.categoryId = :categoryId', {
-        categoryId: query.categoryId,
-      });
+      const categoryIds = await this.getCategoryAndDescendantIds(
+        Number(query.categoryId),
+      );
+
+      qb.andWhere('p.categoryId IN (:...categoryIds)', { categoryIds });
     }
 
     if (q) {
@@ -748,9 +977,11 @@ export class ProductsService {
     }
 
     if (query.categoryId) {
-      qb.andWhere('p.categoryId = :categoryId', {
-        categoryId: query.categoryId,
-      });
+      const categoryIds = await this.getCategoryAndDescendantIds(
+        Number(query.categoryId),
+      );
+
+      qb.andWhere('p.categoryId IN (:...categoryIds)', { categoryIds });
     }
 
     if (q) {
@@ -778,17 +1009,6 @@ export class ProductsService {
       order: { position: 'ASC', id: 'ASC' },
     });
 
-    /*
-      Không dùng:
-        return { ...product, images }
-
-      Vì product là TypeORM Entity instance.
-      Spread sẽ biến entity thành plain object, dễ làm serializer trả thiếu images
-      khi chạy deploy.
-
-      Cách đúng:
-      Gán images trực tiếp vào entity rồi return lại chính entity đó.
-    */
     const productWithImages = product as ProductWithImages;
 
     productWithImages.images = images;
@@ -821,10 +1041,7 @@ export class ProductsService {
   ) {
     const product = await this.assertCanManageProduct(id, actorId, actorRole);
 
-    // Một khi deleted_at đã có giá trị thì không cho sửa nữa.
     this.assertProductNotDeleted(product);
-
-    // Shop không được sửa sản phẩm đã bị admin khóa.
     this.assertSellerCanEditProduct(product, actorRole);
 
     if (patch.status !== undefined) {
@@ -885,10 +1102,6 @@ export class ProductsService {
   async removeProduct(id: number, actorId: number, actorRole: UserRole) {
     const product = await this.assertCanManageProduct(id, actorId, actorRole);
 
-    if (product.deletedAt) {
-      throw new BadRequestException('Sản phẩm đã bị xóa trước đó');
-    }
-
     const shop = await this.shopsRepo.findOne({ where: { id: product.shopId } });
 
     if (!shop) {
@@ -899,11 +1112,13 @@ export class ProductsService {
       const productRepo = trx.getRepository(Product);
       const statsRepo = trx.getRepository(ShopStats);
 
-      // Quan trọng:
-      // Không dùng delete().
-      // Dùng softDelete() để TypeORM tự gán deleted_at = NOW().
-      // Product_images và product_variants không bị xóa theo.
-      await productRepo.softDelete({ id });
+      await this.cleanupDeletedProductFromCarts(trx, id);
+
+      const result = await productRepo.delete({ id });
+
+      if (!result.affected) {
+        throw new NotFoundException('Không tìm thấy sản phẩm');
+      }
 
       const stats = await statsRepo.findOne({ where: { shopId: shop.id } });
 

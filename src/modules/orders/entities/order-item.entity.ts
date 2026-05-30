@@ -12,56 +12,78 @@ import { Order } from './order.entity';
 
 @Entity('order_items')
 @Index('IDX_order_items_order', ['orderId'])
+@Index('IDX_order_items_shop', ['shopId'])
 export class OrderItem {
   @PrimaryGeneratedColumn('uuid')
-  id !: string;
+  id!: string;
 
   @Column({ type: 'char', length: 36, name: 'order_id' })
-  orderId !: string;
+  orderId!: string;
 
   @ManyToOne(() => Order, (o) => o.items, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'order_id' })
-  order !: Order;
+  order!: Order;
 
   @Column({ type: 'int', unsigned: true, name: 'product_id' })
-  productId !: number;
+  productId!: number;
 
-  @Column({ type: 'int', unsigned: true, name: 'product_variant_id', nullable: true })
-  productVariantId !: number | null;
+  @Column({
+    type: 'int',
+    unsigned: true,
+    name: 'product_variant_id',
+    nullable: true,
+  })
+  productVariantId!: number | null;
+
+  @Column({ name: 'shop_id', type: 'int', unsigned: true, nullable: true })
+  shopId!: number | null;
+
+  @Column({
+    name: 'shop_name_snapshot',
+    type: 'varchar',
+    length: 150,
+    nullable: true,
+  })
+  shopNameSnapshot!: string | null;
 
   @Column({ type: 'varchar', length: 220, name: 'name_snapshot' })
-  nameSnapshot !: string;
+  nameSnapshot!: string;
 
-  @Column({ type: 'varchar', length: 300, name: 'image_snapshot', nullable: true })
-  imageSnapshot !: string | null;
+  @Column({
+    type: 'varchar',
+    length: 300,
+    name: 'image_snapshot',
+    nullable: true,
+  })
+  imageSnapshot!: string | null;
 
   @Column({ type: 'decimal', precision: 12, scale: 2 })
-  price !: string;
+  price!: string;
 
   @Column({ type: 'int' })
-  quantity !: number;
+  quantity!: number;
 
   @Column({ type: 'decimal', precision: 12, scale: 2, name: 'total_line' })
-  totalLine !: string;
+  totalLine!: string;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  value1 !: string | null;
+  value1!: string | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  value2 !: string | null;
+  value2!: string | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  value3 !: string | null;
+  value3!: string | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  value4 !: string | null;
+  value4!: string | null;
 
   @Column({ type: 'varchar', length: 100, nullable: true })
-  value5 !: string | null;
+  value5!: string | null;
 
   @CreateDateColumn({ type: 'datetime', name: 'created_at' })
-  createdAt !: Date;
+  createdAt!: Date;
 
   @UpdateDateColumn({ type: 'datetime', name: 'updated_at' })
-  updatedAt !: Date;
+  updatedAt!: Date;
 }

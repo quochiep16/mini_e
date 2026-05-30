@@ -1,5 +1,13 @@
 import { Transform, Type } from 'class-transformer';
-import { IsBoolean, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 function toBoolean(value: unknown): unknown {
   if (value === true || value === 'true' || value === '1' || value === 1) {
@@ -13,13 +21,35 @@ function toBoolean(value: unknown): unknown {
   return value;
 }
 
+function trimToUndefined(value: unknown): unknown {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+
+  return value;
+}
+
+function toOptionalNumber(value: unknown): unknown {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  return Number(value);
+}
+
 export class SearchCategoriesDto {
   @IsOptional()
+  @Transform(({ value }) => trimToUndefined(value))
   @IsString()
   q?: string;
 
   @IsOptional()
-  @Type(() => Number)
+  @Transform(({ value }) => toOptionalNumber(value))
   @IsInt({ message: 'parentId phải là số nguyên' })
   @Min(1, { message: 'parentId phải >= 1' })
   parentId?: number;
@@ -28,4 +58,25 @@ export class SearchCategoriesDto {
   @Transform(({ value }) => toBoolean(value))
   @IsBoolean({ message: 'isActive phải là boolean' })
   isActive?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'page phải là số nguyên' })
+  @Min(1, { message: 'page phải >= 1' })
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'limit phải là số nguyên' })
+  @Min(1, { message: 'limit phải >= 1' })
+  @Max(100, { message: 'limit tối đa 100' })
+  limit?: number;
+
+  @IsOptional()
+  @IsIn(['id', 'name', 'slug', 'sortOrder', 'createdAt', 'updatedAt'])
+  sortBy?: 'id' | 'name' | 'slug' | 'sortOrder' | 'createdAt' | 'updatedAt';
+
+  @IsOptional()
+  @IsIn(['ASC', 'DESC', 'asc', 'desc'])
+  sortOrder?: 'ASC' | 'DESC' | 'asc' | 'desc';
 }

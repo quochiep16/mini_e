@@ -89,15 +89,14 @@ export class OrdersService {
   private async applyShopStatsOnCompleted(orderId: string) {
     const rows = await this.dataSource
       .createQueryBuilder()
-      .select('p.shop_id', 'shopId')
+      .select('oi.shop_id', 'shopId')
       .addSelect('SUM(oi.quantity)', 'qty')
       .addSelect('SUM(oi.total_line)', 'lines')
-      .addSelect('COUNT(DISTINCT oi.product_id)', 'productCount')
       .from('order_items', 'oi')
-      .innerJoin('products', 'p', 'p.id = oi.product_id')
       .where('oi.order_id = :orderId', { orderId })
-      .groupBy('p.shop_id')
-      .getRawMany<{ shopId: string; qty: string; lines: string; productCount: string }>();
+      .andWhere('oi.shop_id IS NOT NULL')
+      .groupBy('oi.shop_id')
+      .getRawMany<{ shopId: string; qty: string; lines: string }>();
 
     for (const r of rows) {
       const shopId = Number(r.shopId);
@@ -118,8 +117,10 @@ export class OrdersService {
       }
 
       (stats as any).totalOrders = Number((stats as any).totalOrders ?? 0) + 1;
-      (stats as any).totalSold = Number((stats as any).totalSold ?? 0) + Math.max(0, qty);
-      (stats as any).totalRevenue = Number((stats as any).totalRevenue ?? 0) + Math.max(0, lines);
+      (stats as any).totalSold =
+        Number((stats as any).totalSold ?? 0) + Math.max(0, qty);
+      (stats as any).totalRevenue =
+        Number((stats as any).totalRevenue ?? 0) + Math.max(0, lines);
 
       await this.shopStatsRepo.save(stats);
     }
@@ -137,6 +138,7 @@ export class OrdersService {
       const pid = Number(pr.productId);
       const q = Number(pr.qty || 0);
       if (!pid || q <= 0) continue;
+
       await this.productRepo.increment({ id: pid } as any, 'sold', q);
     }
   }
@@ -144,13 +146,13 @@ export class OrdersService {
   private async revertShopStatsOnReturned(orderId: string) {
     const rows = await this.dataSource
       .createQueryBuilder()
-      .select('p.shop_id', 'shopId')
+      .select('oi.shop_id', 'shopId')
       .addSelect('SUM(oi.quantity)', 'qty')
       .addSelect('SUM(oi.total_line)', 'lines')
       .from('order_items', 'oi')
-      .innerJoin('products', 'p', 'p.id = oi.product_id')
       .where('oi.order_id = :orderId', { orderId })
-      .groupBy('p.shop_id')
+      .andWhere('oi.shop_id IS NOT NULL')
+      .groupBy('oi.shop_id')
       .getRawMany<{ shopId: string; qty: string; lines: string }>();
 
     for (const r of rows) {
@@ -486,6 +488,8 @@ export class OrdersService {
           orderId: savedOrder.id,
           productId: it.productId,
           productVariantId: it.variantId ?? null,
+          shopId: shop.id,
+          shopNameSnapshot: shop.name ?? null,
           nameSnapshot,
           imageSnapshot,
           price: Number(it.price).toFixed(2),

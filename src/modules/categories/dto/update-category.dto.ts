@@ -21,15 +21,24 @@ function toBoolean(value: unknown): unknown {
   return value;
 }
 
-function toNullableNumber(value: unknown): unknown {
-  if (value === null || value === 'null' || value === '') {
-    return null;
+function trimToUndefined(value: unknown): unknown {
+  if (value === undefined || value === null) {
+    return undefined;
   }
 
-  return Number(value);
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+
+  return value;
 }
 
 function toNullableString(value: unknown): unknown {
+  if (value === undefined) {
+    return undefined;
+  }
+
   if (value === null || value === 'null' || value === '') {
     return null;
   }
@@ -42,26 +51,41 @@ function toNullableString(value: unknown): unknown {
   return value;
 }
 
+function toNullableNumber(value: unknown): unknown {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null || value === 'null' || value === '') {
+    return null;
+  }
+
+  return Number(value);
+}
+
 export class UpdateCategoryDto {
   @IsOptional()
-  @IsString({ message: 'name phải là chuỗi' })
-  @MaxLength(120, { message: 'name tối đa 120 ký tự' })
+  @Transform(({ value }) => trimToUndefined(value))
+  @IsString({ message: 'Tên category phải là chuỗi' })
+  @MaxLength(120, { message: 'Tên category tối đa 120 ký tự' })
   name?: string;
 
   @IsOptional()
-  @IsString({ message: 'slug phải là chuỗi' })
-  @MaxLength(160, { message: 'slug tối đa 160 ký tự' })
+  @Transform(({ value }) => trimToUndefined(value))
+  @IsString({ message: 'Slug phải là chuỗi' })
+  @MaxLength(160, { message: 'Slug tối đa 160 ký tự' })
   slug?: string;
 
   @IsOptional()
-  @IsString({ message: 'description phải là chuỗi' })
-  @MaxLength(2000, { message: 'description tối đa 2000 ký tự' })
+  @Transform(({ value }) => toNullableString(value))
+  @ValidateIf((object) => object.description !== null)
+  @IsString({ message: 'Mô tả phải là chuỗi' })
+  @MaxLength(2000, { message: 'Mô tả tối đa 2000 ký tự' })
   description?: string | null;
 
-  // Nếu muốn xóa ảnh cũ, FE có thể gửi imageUrl = '' hoặc null.
-  // Nếu upload file mới, controller sẽ ghi đè imageUrl bằng URL Cloudinary.
   @IsOptional()
   @Transform(({ value }) => toNullableString(value))
+  @ValidateIf((object) => object.imageUrl !== null)
   @IsString({ message: 'imageUrl phải là chuỗi' })
   @MaxLength(500, { message: 'imageUrl tối đa 500 ký tự' })
   imageUrl?: string | null;

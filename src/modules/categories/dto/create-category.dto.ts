@@ -22,34 +22,45 @@ function toBoolean(value: unknown): unknown {
 }
 
 function trimToUndefined(value: unknown): unknown {
-  if (typeof value !== 'string') {
-    return value;
+  if (value === undefined || value === null || value === '') {
+    return undefined;
   }
 
-  const trimmed = value.trim();
-  return trimmed || undefined;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+
+  return value;
+}
+
+function toOptionalNumber(value: unknown): unknown {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  return Number(value);
 }
 
 export class CreateCategoryDto {
-  @IsNotEmpty({ message: 'name không được để trống' })
-  @IsString({ message: 'name phải là chuỗi' })
-  @MaxLength(120, { message: 'name tối đa 120 ký tự' })
+  @Transform(({ value }) => trimToUndefined(value))
+  @IsNotEmpty({ message: 'Tên category không được để trống' })
+  @IsString({ message: 'Tên category phải là chuỗi' })
+  @MaxLength(120, { message: 'Tên category tối đa 120 ký tự' })
   name!: string;
 
   @IsOptional()
   @Transform(({ value }) => trimToUndefined(value))
-  @IsString({ message: 'slug phải là chuỗi' })
-  @MaxLength(160, { message: 'slug tối đa 160 ký tự' })
+  @IsString({ message: 'Slug phải là chuỗi' })
+  @MaxLength(160, { message: 'Slug tối đa 160 ký tự' })
   slug?: string;
 
   @IsOptional()
   @Transform(({ value }) => trimToUndefined(value))
-  @IsString({ message: 'description phải là chuỗi' })
-  @MaxLength(2000, { message: 'description tối đa 2000 ký tự' })
+  @IsString({ message: 'Mô tả phải là chuỗi' })
+  @MaxLength(2000, { message: 'Mô tả tối đa 2000 ký tự' })
   description?: string;
 
-  // Cho phép gửi URL ảnh sẵn nếu không upload file.
-  // Nếu FE upload file image thì controller sẽ ghi đè bằng URL Cloudinary.
   @IsOptional()
   @Transform(({ value }) => trimToUndefined(value))
   @IsString({ message: 'imageUrl phải là chuỗi' })
@@ -57,7 +68,7 @@ export class CreateCategoryDto {
   imageUrl?: string;
 
   @IsOptional()
-  @Type(() => Number)
+  @Transform(({ value }) => toOptionalNumber(value))
   @IsInt({ message: 'parentId phải là số nguyên' })
   @Min(1, { message: 'parentId phải >= 1' })
   parentId?: number;

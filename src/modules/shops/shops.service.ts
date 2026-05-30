@@ -294,7 +294,6 @@ export class ShopsService {
 
     const shopId = Number((shop as any).id);
     const rangeSql = this.getOrderRangeSql(range);
-
     const safePage = Math.max(1, Number(page) || 1);
     const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 20));
 
@@ -304,8 +303,7 @@ export class ShopsService {
       .addSelect('MAX(o.created_at)', 'createdAt')
       .from('orders', 'o')
       .innerJoin('order_items', 'oi', 'oi.order_id = o.id')
-      .innerJoin('products', 'p', 'p.id = oi.product_id')
-      .where('p.shop_id = :shopId', { shopId });
+      .where('oi.shop_id = :shopId', { shopId });
 
     if (rangeSql) {
       idQuery.andWhere(rangeSql);
@@ -325,8 +323,7 @@ export class ShopsService {
       .select('COUNT(DISTINCT o.id)', 'cnt')
       .from('orders', 'o')
       .innerJoin('order_items', 'oi', 'oi.order_id = o.id')
-      .innerJoin('products', 'p', 'p.id = oi.product_id')
-      .where('p.shop_id = :shopId', { shopId });
+      .where('oi.shop_id = :shopId', { shopId });
 
     if (rangeSql) {
       totalQuery.andWhere(rangeSql);
@@ -352,7 +349,17 @@ export class ShopsService {
     });
 
     const map = new Map(orders.map((o) => [o.id, o]));
-    const ordered = ids.map((id) => map.get(id)).filter(Boolean);
+
+    const ordered = ids
+      .map((id) => map.get(id))
+      .filter(Boolean)
+      .map((order: any) => {
+        order.items = (order.items || []).filter(
+          (item: any) => Number(item.shopId) === shopId,
+        );
+
+        return order;
+      });
 
     return {
       items: ordered,
@@ -380,9 +387,8 @@ export class ShopsService {
       .createQueryBuilder()
       .select('COUNT(oi.id)', 'cnt')
       .from('order_items', 'oi')
-      .innerJoin('products', 'p', 'p.id = oi.product_id')
       .where('oi.order_id = :orderId', { orderId })
-      .andWhere('p.shop_id = :shopId', { shopId })
+      .andWhere('oi.shop_id = :shopId', { shopId })
       .getRawOne<{ cnt: string }>();
 
     const cnt = Number(row?.cnt || 0);
@@ -411,7 +417,67 @@ export class ShopsService {
       throw new NotFoundException('Không tìm thấy đơn hàng.');
     }
 
+    (order as any).items = ((order as any).items || []).filter(
+      (item: any) => Number(item.shopId) === shopId,
+    );
+
     return order;
+  }
+
+  private async calculateShopSalesSnapshot(shopId: number) {
+    const row = await this.dataSource
+      .createQueryBuilder()
+      .select('COUNT(DISTINCT o.id)', 'totalOrders')
+      .addSelect('COALESCE(SUM(oi.quantity), 0)', 'totalSold')
+      .addSelect('COALESCE(SUM(oi.total_line), 0)', 'totalRevenue')
+      .from('order_items', 'oi')
+      .innerJoin('orders', 'o', 'o.id = oi.order_id')
+      .where('oi.shop_id = :shopId', { shopId })
+      .andWhere('o.status = :status', { status: OrderStatus.COMPLETED })
+      .getRawOne<{
+        totalOrders: string;
+        totalSold: string;
+        totalRevenue: string;
+      }>();
+
+    return {
+      totalOrders: Number(row?.totalOrders || 0),
+      totalSold: Number(row?.totalSold || 0),
+      totalRevenue: Number(row?.totalRevenue || 0),
+    };
+  }
+
+  private async refreshShopStatsFromSnapshot(shopId: number) {
+    const productRow = await this.dataSource
+      .createQueryBuilder()
+      .select('COUNT(p.id)', 'productCount')
+      .from('products', 'p')
+      .where('p.shop_id = :shopId', { shopId })
+      .andWhere('p.deleted_at IS NULL')
+      .getRawOne<{ productCount: string }>();
+
+    const sales = await this.calculateShopSalesSnapshot(shopId);
+
+    let stats = await this.statsRepo.findOne({
+      where: { shopId } as any,
+    });
+
+    if (!stats) {
+      stats = this.statsRepo.create({
+        shopId,
+        productCount: 0,
+        totalSold: 0,
+        totalRevenue: 0,
+        totalOrders: 0,
+      });
+    }
+
+    (stats as any).productCount = Number(productRow?.productCount || 0);
+    (stats as any).totalSold = sales.totalSold;
+    (stats as any).totalRevenue = sales.totalRevenue;
+    (stats as any).totalOrders = sales.totalOrders;
+
+    await this.statsRepo.save(stats);
   }
 
   private isValidNextShipping(prev: ShippingStatus, next: ShippingStatus) {
@@ -485,7 +551,11 @@ export class ShopsService {
       order.paymentStatus = PaymentStatus.PAID;
     }
 
-    return this.ordersRepo.save(order as any);
+    const saved = await this.ordersRepo.save(order as any);
+
+    await this.refreshShopStatsFromSnapshot(shopId);
+
+    return saved;
   }
 
   async registerForUser(
@@ -814,13 +884,8 @@ export class ShopsService {
       }
 
       /*
-        cart_items đang dùng camelCase:
-        - productId
-        - variantId
-        - cartId
-
-        Bảng này không có FK tới products, nên phải tự xóa item giỏ hàng
-        trước khi product bị xóa cascade theo shop.
+        cart_items dùng productId và không có FK tới products.
+        Khi xóa shop/product, phải xóa item trong giỏ để tránh giỏ hàng giữ sản phẩm đã mất.
       */
       await trx.query(
         `
@@ -833,28 +898,15 @@ export class ShopsService {
       );
 
       /*
-        Không xóa order_items.
-        order_items là snapshot lịch sử đơn hàng, không FK tới products.
-        Nếu xóa ở đây thì đơn cũ sẽ mất chi tiết sản phẩm.
+        KHÔNG xóa order_items.
+        order_items là snapshot lịch sử đơn hàng và đã có shop_id snapshot.
+        Nếu xóa order_items thì seller/user sẽ mất lịch sử doanh thu/đơn hàng.
       */
 
-      /*
-        Không cần tự xóa:
-        - product_images
-        - product_variants
-        - product_reviews
-        - product_favorites
-        - product_interactions
-        - product_tags
-        - product_trending
-        - user_product_preferences
-        - shop_stats
-
-        Vì DB đã có cascade theo products/shop.
-      */
       await shopRepo.delete({ id: currentShop.id });
     });
   }
+
   private async withStats(shopId: number, includeRevenue: boolean) {
     const shop = await this.shopsRepo.findOne({
       where: { id: shopId },
