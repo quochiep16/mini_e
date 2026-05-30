@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 export class QueryUserDto {
   @IsOptional()
@@ -16,13 +16,39 @@ export class QueryUserDto {
 
   @IsOptional()
   @IsString({ message: 'search phải là chuỗi' })
-  search?: string; // name/email/phone
+  search?: string;
 
   @IsOptional()
-  @IsString({ message: 'sortBy không hợp lệ' })
-  sortBy?: 'createdAt' | 'name' | 'lastLoginAt' | 'deletedAt';
+  @IsIn(
+    [
+      'id',
+      'name',
+      'email',
+      'phone',
+      'role',
+      'isVerified',
+      'isSystem',
+      'lastLoginAt',
+      'createdAt',
+      'updatedAt',
+      'deletedAt',
+    ],
+    { message: 'sortBy không hợp lệ' },
+  )
+  sortBy?:
+    | 'id'
+    | 'name'
+    | 'email'
+    | 'phone'
+    | 'role'
+    | 'isVerified'
+    | 'isSystem'
+    | 'lastLoginAt'
+    | 'createdAt'
+    | 'updatedAt'
+    | 'deletedAt';
 
   @IsOptional()
-  @IsString({ message: 'sortOrder không hợp lệ' })
+  @IsIn(['ASC', 'DESC'], { message: 'sortOrder không hợp lệ' })
   sortOrder?: 'ASC' | 'DESC';
 }

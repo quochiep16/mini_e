@@ -93,10 +93,6 @@ export class UsersService {
   }
 
   private async compareOtp(rawCode: string, hashedCode: string) {
-    /**
-     * Hỗ trợ cả trường hợp OTP cũ trong DB đang lưu plain text.
-     * Nếu sau này toàn bộ OTP đều hash thì có thể bỏ nhánh rawCode === hashedCode.
-     */
     if (rawCode === hashedCode) {
       return true;
     }
@@ -128,22 +124,17 @@ export class UsersService {
   private sanitizeUser<T extends Partial<User>>(user: T | null | undefined) {
     if (!user) return user;
 
-    const {
-      passwordHash,
-      otp,
-      timeOtp,
-      systemCode,
-      ...safe
-    } = user as any;
+    const { passwordHash, otp, timeOtp, systemCode, ...safe } = user as any;
 
     return safe;
   }
 
   private isRootAdmin(user: Partial<User> | null | undefined) {
-    return !!user && (
-      user.isSystem === true ||
-      user.systemCode === this.ROOT_ADMIN_CODE ||
-      user.email === this.ROOT_ADMIN_EMAIL
+    return (
+      !!user &&
+      (user.isSystem === true ||
+        user.systemCode === this.ROOT_ADMIN_CODE ||
+        user.email === this.ROOT_ADMIN_EMAIL)
     );
   }
 
@@ -189,10 +180,6 @@ export class UsersService {
     deletedAt: Date,
     queryRunner: any,
   ): Promise<void> {
-    /**
-     * Theo database hiện tại: mỗi user có tối đa 1 shop.
-     * Nhưng viết dạng nhiều shop để an toàn nếu sau này mở rộng.
-     */
     const shops = await queryRunner.query(
       `
       SELECT id
@@ -210,9 +197,6 @@ export class UsersService {
     const shopIds = shops.map((shop: any) => Number(shop.id));
     const shopPlaceholders = shopIds.map(() => '?').join(',');
 
-    /**
-     * 1. Xóa mềm toàn bộ product active của shop.
-     */
     await queryRunner.query(
       `
       UPDATE products
@@ -223,9 +207,6 @@ export class UsersService {
       [deletedAt, ...shopIds],
     );
 
-    /**
-     * 2. Xóa mềm shop.
-     */
     await queryRunner.query(
       `
       UPDATE shops
@@ -560,17 +541,8 @@ export class UsersService {
     try {
       const now = new Date();
 
-      /**
-       * Nếu user có shop active:
-       * - set products.deleted_at = now
-       * - set shops.deleted_at = now
-       */
       await this.softDeleteUserShopAndProducts(id, now, queryRunner);
 
-      /**
-       * Xóa mềm user.
-       * Không đổi email, phone, name, avatarUrl.
-       */
       const result = await queryRunner.manager
         .createQueryBuilder()
         .update(User)
@@ -693,13 +665,6 @@ export class UsersService {
 
       const variantPlaceholders = variantIds.map(() => '?').join(',');
 
-      /**
-       * 1. Giữ lại orders và product_reviews.
-       * Muốn xóa cứng user/product mà vẫn giữ order/review thì các cột này cần nullable:
-       * - orders.user_id
-       * - product_reviews.user_id
-       * - product_reviews.product_id
-       */
       await queryRunner.query(
         `
         UPDATE orders
@@ -729,15 +694,12 @@ export class UsersService {
         );
       }
 
-      /**
-       * 2. Xóa cart của user.
-       */
       await queryRunner.query(
         `
         DELETE ci
         FROM cart_items ci
-        INNER JOIN carts c ON c.id = ci.cartId
-        WHERE c.userId = ?
+        INNER JOIN carts c ON c.id = ci.cart_id
+        WHERE c.user_id = ?
         `,
         [id],
       );
@@ -745,20 +707,16 @@ export class UsersService {
       await queryRunner.query(
         `
         DELETE FROM carts
-        WHERE userId = ?
+        WHERE user_id = ?
         `,
         [id],
       );
 
-      /**
-       * 3. Nếu sản phẩm của shop đang nằm trong giỏ user khác,
-       * xóa các cart_items đó để tránh giỏ hàng bị trỏ tới product đã hard delete.
-       */
       if (productIds.length > 0) {
         await queryRunner.query(
           `
           DELETE FROM cart_items
-          WHERE productId IN (${productPlaceholders})
+          WHERE product_id IN (${productPlaceholders})
           `,
           productIds,
         );
@@ -768,19 +726,16 @@ export class UsersService {
         await queryRunner.query(
           `
           DELETE FROM cart_items
-          WHERE variantId IN (${variantPlaceholders})
+          WHERE variant_id IN (${variantPlaceholders})
           `,
           variantIds,
         );
       }
 
-      /**
-       * 4. Xóa dữ liệu phụ của user.
-       */
       await queryRunner.query(
         `
         DELETE FROM user_addresses
-        WHERE userId = ?
+        WHERE user_id = ?
         `,
         [id],
       );
@@ -811,15 +766,28 @@ export class UsersService {
 
       await queryRunner.query(
         `
+        DELETE FROM user_tag_preferences
+        WHERE user_id = ?
+        `,
+        [id],
+      );
+
+      await queryRunner.query(
+        `
+        DELETE FROM user_product_preferences
+        WHERE user_id = ?
+        `,
+        [id],
+      );
+
+      await queryRunner.query(
+        `
         DELETE FROM payment_sessions
         WHERE user_id = ?
         `,
         [id],
       );
 
-      /**
-       * 5. Xóa dữ liệu liên quan tới product/shop trước khi xóa product/shop.
-       */
       if (productIds.length > 0) {
         await queryRunner.query(
           `
@@ -832,6 +800,30 @@ export class UsersService {
         await queryRunner.query(
           `
           DELETE FROM product_interactions
+          WHERE product_id IN (${productPlaceholders})
+          `,
+          productIds,
+        );
+
+        await queryRunner.query(
+          `
+          DELETE FROM user_product_preferences
+          WHERE product_id IN (${productPlaceholders})
+          `,
+          productIds,
+        );
+
+        await queryRunner.query(
+          `
+          DELETE FROM product_tags
+          WHERE product_id IN (${productPlaceholders})
+          `,
+          productIds,
+        );
+
+        await queryRunner.query(
+          `
+          DELETE FROM product_trending
           WHERE product_id IN (${productPlaceholders})
           `,
           productIds,
@@ -888,9 +880,6 @@ export class UsersService {
         );
       }
 
-      /**
-       * 6. Cuối cùng mới xóa user.
-       */
       await queryRunner.query(
         `
         DELETE FROM users

@@ -30,7 +30,9 @@ export class ActiveUserGuard implements CanActivate {
     const req = context.switchToHttp().getRequest();
     const payload = req.user;
 
-    if (!payload) return true;
+    if (!payload) {
+      throw new UnauthorizedException('Bạn cần đăng nhập');
+    }
 
     const userId = Number(payload.id ?? payload.sub);
 

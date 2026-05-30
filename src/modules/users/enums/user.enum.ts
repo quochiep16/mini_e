@@ -1,11 +1,9 @@
+import { AppRole } from '../../../common/constants/roles';
+
 export enum Gender {
   MALE = 'MALE',
   FEMALE = 'FEMALE',
   OTHER = 'OTHER',
 }
 
-export enum UserRole {
-  USER = 'USER',
-  SELLER = 'SELLER',
-  ADMIN = 'ADMIN',
-}
+export { AppRole as UserRole };

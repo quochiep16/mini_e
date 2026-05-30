@@ -24,7 +24,9 @@ export class UpdateUserDto {
   email?: string | null;
 
   @IsOptional()
-  @Matches(/^\+?[0-9]{8,15}$/, { message: 'Số điện thoại không hợp lệ' })
+  @Matches(/^\+?[0-9\s().-]{8,20}$/, {
+    message: 'Số điện thoại không hợp lệ',
+  })
   phone?: string | null;
 
   @IsOptional()
@@ -47,7 +49,6 @@ export class UpdateUserDto {
   @IsEnum(Gender, { message: 'gender không hợp lệ' })
   gender?: Gender | null;
 
-  // Chỉ ADMIN nên dùng 2 field này
   @IsOptional()
   @IsBoolean({ message: 'isVerified phải là boolean' })
   isVerified?: boolean;

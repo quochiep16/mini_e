@@ -50,8 +50,14 @@ export class AuthController {
 
     res.cookie(this.getRefreshCookieName(), refreshToken, {
       httpOnly: true,
+
+      // Production bắt buộc secure=true nếu sameSite='none'
       secure: isProd,
-      sameSite: isProd ? 'strict' : 'lax',
+
+      // Local dùng lax cho dễ test.
+      // Production dùng none để FE và BE khác domain vẫn gửi được refresh cookie.
+      sameSite: isProd ? 'none' : 'lax',
+
       maxAge: this.getRefreshCookieMaxAge(),
       path: '/',
     });
@@ -63,7 +69,10 @@ export class AuthController {
     res.clearCookie(this.getRefreshCookieName(), {
       httpOnly: true,
       secure: isProd,
-      sameSite: isProd ? 'strict' : 'lax',
+
+      // Phải giống với lúc set cookie để clear chính xác trên production
+      sameSite: isProd ? 'none' : 'lax',
+
       path: '/',
     });
   }
