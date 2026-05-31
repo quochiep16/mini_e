@@ -19,28 +19,69 @@ export class PaymentGatewayService {
   constructor(private readonly config: ConfigService) {}
 
   private getVnpConfig(): VnpConfig {
-    const version = this.config.get<string>('VNPAY_VERSION') || this.config.get<string>('VNP_VERSION') || '2.1.0';
-    const tmnCode = this.config.get<string>('VNPAY_TMN_CODE') || this.config.get<string>('VNP_TMN_CODE') || '';
+    const version =
+      this.config.get<string>('VNPAY_VERSION') ||
+      this.config.get<string>('VNP_VERSION') ||
+      '2.1.0';
+
+    const tmnCode =
+      this.config.get<string>('VNPAY_TMN_CODE') ||
+      this.config.get<string>('VNP_TMN_CODE') ||
+      '';
+
     const hashSecret =
-      this.config.get<string>('VNPAY_HASH_SECRET') || this.config.get<string>('VNP_HASH_SECRET') || '';
+      this.config.get<string>('VNPAY_HASH_SECRET') ||
+      this.config.get<string>('VNP_HASH_SECRET') ||
+      '';
+
     const endpoint =
-      this.config.get<string>('VNPAY_ENDPOINT') || this.config.get<string>('VNP_ENDPOINT') || '';
+      this.config.get<string>('VNPAY_ENDPOINT') ||
+      this.config.get<string>('VNP_ENDPOINT') ||
+      '';
+
     const returnUrl =
-      this.config.get<string>('VNPAY_RETURN_URL') || this.config.get<string>('VNP_RETURN_URL') || '';
-    const locale = this.config.get<string>('VNPAY_LOCALE') || this.config.get<string>('VNP_LOCALE') || 'vn';
-    const currency = this.config.get<string>('VNPAY_CURRENCY') || this.config.get<string>('VNP_CURRENCY') || 'VND';
+      this.config.get<string>('VNPAY_RETURN_URL') ||
+      this.config.get<string>('VNP_RETURN_URL') ||
+      '';
+
+    const locale =
+      this.config.get<string>('VNPAY_LOCALE') ||
+      this.config.get<string>('VNP_LOCALE') ||
+      'vn';
+
+    const currency =
+      this.config.get<string>('VNPAY_CURRENCY') ||
+      this.config.get<string>('VNP_CURRENCY') ||
+      'VND';
+
     const expireMinutes = Number(
-      this.config.get<string>('VNPAY_EXPIRE_MINUTES') || this.config.get<string>('VNP_EXPIRE_MINUTES') || '15',
+      this.config.get<string>('VNPAY_EXPIRE_MINUTES') ||
+        this.config.get<string>('VNP_EXPIRE_MINUTES') ||
+        '15',
     );
 
     const missing: string[] = [];
-    if (!tmnCode) missing.push('VNPAY_TMN_CODE (or VNP_TMN_CODE)');
-    if (!hashSecret) missing.push('VNPAY_HASH_SECRET (or VNP_HASH_SECRET)');
-    if (!endpoint) missing.push('VNPAY_ENDPOINT (or VNP_ENDPOINT)');
-    if (!returnUrl) missing.push('VNPAY_RETURN_URL (or VNP_RETURN_URL)');
+
+    if (!tmnCode) {
+      missing.push('VNPAY_TMN_CODE (or VNP_TMN_CODE)');
+    }
+
+    if (!hashSecret) {
+      missing.push('VNPAY_HASH_SECRET (or VNP_HASH_SECRET)');
+    }
+
+    if (!endpoint) {
+      missing.push('VNPAY_ENDPOINT (or VNP_ENDPOINT)');
+    }
+
+    if (!returnUrl) {
+      missing.push('VNPAY_RETURN_URL (or VNP_RETURN_URL)');
+    }
 
     if (missing.length) {
-      throw new BadRequestException(`VNPAY config missing: ${missing.join(', ')}`);
+      throw new BadRequestException(
+        `VNPAY config missing: ${missing.join(', ')}`,
+      );
     }
 
     return {
@@ -51,12 +92,21 @@ export class PaymentGatewayService {
       returnUrl,
       locale,
       currency,
-      expireMinutes: Number.isFinite(expireMinutes) && expireMinutes > 0 ? expireMinutes : 15,
+      expireMinutes:
+        Number.isFinite(expireMinutes) && expireMinutes > 0
+          ? expireMinutes
+          : 15,
     };
   }
 
-  createVnPayUrl(params: { code: string; amount: number; ipAddress: string; bankCode?: string }) {
+  createVnPayUrl(params: {
+    code: string;
+    amount: number;
+    ipAddress: string;
+    bankCode?: string;
+  }) {
     const vnp = this.getVnpConfig();
+
     const now = new Date();
     const expire = new Date(now.getTime() + vnp.expireMinutes * 60 * 1000);
 
@@ -69,24 +119,36 @@ export class PaymentGatewayService {
       vnp_TxnRef: params.code,
       vnp_OrderInfo: `Thanh toan don hang ${params.code}`,
       vnp_OrderType: 'other',
-      vnp_Amount: Math.round(params.amount * 100),
+      vnp_Amount: Math.round(Number(params.amount) * 100),
       vnp_ReturnUrl: vnp.returnUrl,
-      vnp_IpAddr: params.ipAddress || '127.0.0.1',
-      vnp_CreateDate: this.formatDate(now),
-      vnp_ExpireDate: this.formatDate(expire),
+      vnp_IpAddr: this.normalizeIpAddress(params.ipAddress),
+      vnp_CreateDate: this.formatVnpayDateVietnam(now),
+      vnp_ExpireDate: this.formatVnpayDateVietnam(expire),
     };
 
-    if (params.bankCode) vnpParams.vnp_BankCode = params.bankCode;
+    if (params.bankCode) {
+      vnpParams.vnp_BankCode = params.bankCode;
+    }
 
     const sortedKeys = Object.keys(vnpParams).sort();
+
     const hashData = sortedKeys
-      .map((k) => `${this.vnpEncode(k)}=${this.vnpEncode(String(vnpParams[k]))}`)
+      .map(
+        (key) =>
+          `${this.vnpEncode(key)}=${this.vnpEncode(String(vnpParams[key]))}`,
+      )
       .join('&');
 
-    const secureHash = crypto.createHmac('sha512', vnp.hashSecret).update(hashData).digest('hex');
+    const secureHash = crypto
+      .createHmac('sha512', vnp.hashSecret)
+      .update(hashData)
+      .digest('hex');
 
     const query = sortedKeys
-      .map((k) => `${this.vnpEncode(k)}=${this.vnpEncode(String(vnpParams[k]))}`)
+      .map(
+        (key) =>
+          `${this.vnpEncode(key)}=${this.vnpEncode(String(vnpParams[key]))}`,
+      )
       .concat([`vnp_SecureHash=${this.vnpEncode(secureHash)}`])
       .join('&');
 
@@ -103,21 +165,30 @@ export class PaymentGatewayService {
 
   verifyVnPayReturn(queryParams: any) {
     const vnp = this.getVnpConfig();
+
     const secureHash = String(queryParams?.vnp_SecureHash || '');
 
     const input: Record<string, any> = { ...queryParams };
+
     delete input.vnp_SecureHash;
     delete input.vnp_SecureHashType;
 
     const sortedKeys = Object.keys(input).sort();
+
     const hashData = sortedKeys
-      .map((k) => `${this.vnpEncode(k)}=${this.vnpEncode(String(input[k]))}`)
+      .map((key) => `${this.vnpEncode(key)}=${this.vnpEncode(String(input[key]))}`)
       .join('&');
 
-    const check = crypto.createHmac('sha512', vnp.hashSecret).update(hashData).digest('hex');
+    const check = crypto
+      .createHmac('sha512', vnp.hashSecret)
+      .update(hashData)
+      .digest('hex');
+
     const valid = check.toLowerCase() === secureHash.toLowerCase();
 
-    const amountRawValue = input.vnp_Amount != null ? Number(input.vnp_Amount) : undefined;
+    const amountRawValue =
+      input.vnp_Amount != null ? Number(input.vnp_Amount) : undefined;
+
     const amount =
       typeof amountRawValue === 'number' && Number.isFinite(amountRawValue)
         ? amountRawValue / 100
@@ -137,14 +208,45 @@ export class PaymentGatewayService {
     };
   }
 
-  private vnpEncode(s: string) {
-    return encodeURIComponent(s).replace(/%20/g, '+');
+  private normalizeIpAddress(ipAddress?: string) {
+    const ip = String(ipAddress || '').trim();
+
+    if (!ip) {
+      return '127.0.0.1';
+    }
+
+    if (ip === '::1') {
+      return '127.0.0.1';
+    }
+
+    if (ip.startsWith('::ffff:')) {
+      return ip.replace('::ffff:', '');
+    }
+
+    return ip;
   }
 
-  private formatDate(d: Date) {
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(
-      d.getMinutes(),
-    )}${pad(d.getSeconds())}`;
+  private vnpEncode(value: string) {
+    return encodeURIComponent(value).replace(/%20/g, '+');
+  }
+
+  /**
+   * VNPAY sandbox/production cần format dạng yyyyMMddHHmmss theo giờ Việt Nam.
+   *
+   * Local máy bạn thường đang ở UTC+7 nên code cũ chạy đúng.
+   * Server deploy thường chạy UTC nên code cũ bị lùi 7 tiếng,
+   * làm VNPAY hiểu giao dịch đã hết hạn và trả Error code=15.
+   */
+  private formatVnpayDateVietnam(date: Date) {
+    const vietnamTime = new Date(date.getTime() + 7 * 60 * 60 * 1000);
+
+    const yyyy = vietnamTime.getUTCFullYear().toString();
+    const MM = String(vietnamTime.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(vietnamTime.getUTCDate()).padStart(2, '0');
+    const HH = String(vietnamTime.getUTCHours()).padStart(2, '0');
+    const mm = String(vietnamTime.getUTCMinutes()).padStart(2, '0');
+    const ss = String(vietnamTime.getUTCSeconds()).padStart(2, '0');
+
+    return `${yyyy}${MM}${dd}${HH}${mm}${ss}`;
   }
 }
