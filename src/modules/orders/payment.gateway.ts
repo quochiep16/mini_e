@@ -12,6 +12,7 @@ type VnpConfig = {
   locale: string;
   currency: string;
   expireMinutes: number;
+  debug: boolean;
 };
 
 @Injectable()
@@ -60,25 +61,18 @@ export class PaymentGatewayService {
         '15',
     );
 
+    const debug =
+      String(this.config.get<string>('VNPAY_DEBUG') || '').toLowerCase() ===
+      'true';
+
     const missing: string[] = [];
 
-    if (!tmnCode) {
-      missing.push('VNPAY_TMN_CODE (or VNP_TMN_CODE)');
-    }
+    if (!tmnCode) missing.push('VNPAY_TMN_CODE');
+    if (!hashSecret) missing.push('VNPAY_HASH_SECRET');
+    if (!endpoint) missing.push('VNPAY_ENDPOINT');
+    if (!returnUrl) missing.push('VNPAY_RETURN_URL');
 
-    if (!hashSecret) {
-      missing.push('VNPAY_HASH_SECRET (or VNP_HASH_SECRET)');
-    }
-
-    if (!endpoint) {
-      missing.push('VNPAY_ENDPOINT (or VNP_ENDPOINT)');
-    }
-
-    if (!returnUrl) {
-      missing.push('VNPAY_RETURN_URL (or VNP_RETURN_URL)');
-    }
-
-    if (missing.length) {
+    if (missing.length > 0) {
       throw new BadRequestException(
         `VNPAY config missing: ${missing.join(', ')}`,
       );
@@ -96,6 +90,7 @@ export class PaymentGatewayService {
         Number.isFinite(expireMinutes) && expireMinutes > 0
           ? expireMinutes
           : 15,
+      debug,
     };
   }
 
@@ -107,10 +102,16 @@ export class PaymentGatewayService {
   }) {
     const vnp = this.getVnpConfig();
 
+    const amount = Number(params.amount);
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestException('Số tiền thanh toán VNPAY không hợp lệ');
+    }
+
     const now = new Date();
     const expire = new Date(now.getTime() + vnp.expireMinutes * 60 * 1000);
 
-    const vnpParams: Record<string, any> = {
+    const vnpParams: Record<string, string | number> = {
       vnp_Version: vnp.version,
       vnp_Command: 'pay',
       vnp_TmnCode: vnp.tmnCode,
@@ -119,7 +120,7 @@ export class PaymentGatewayService {
       vnp_TxnRef: params.code,
       vnp_OrderInfo: `Thanh toan don hang ${params.code}`,
       vnp_OrderType: 'other',
-      vnp_Amount: Math.round(Number(params.amount) * 100),
+      vnp_Amount: Math.round(amount * 100),
       vnp_ReturnUrl: vnp.returnUrl,
       vnp_IpAddr: this.normalizeIpAddress(params.ipAddress),
       vnp_CreateDate: this.formatVnpayDateVietnam(now),
@@ -152,6 +153,20 @@ export class PaymentGatewayService {
       .concat([`vnp_SecureHash=${this.vnpEncode(secureHash)}`])
       .join('&');
 
+    if (vnp.debug) {
+      console.log('[VNPAY CREATE URL DEBUG]', {
+        serverNowIso: now.toISOString(),
+        serverTimezoneOffsetMinutes: now.getTimezoneOffset(),
+        createDateVietnam: vnpParams.vnp_CreateDate,
+        expireDateVietnam: vnpParams.vnp_ExpireDate,
+        txnRef: vnpParams.vnp_TxnRef,
+        amount: vnpParams.vnp_Amount,
+        returnUrl: vnpParams.vnp_ReturnUrl,
+        endpoint: vnp.endpoint,
+        ipAddress: vnpParams.vnp_IpAddr,
+      });
+    }
+
     return `${vnp.endpoint}?${query}`;
   }
 
@@ -176,7 +191,9 @@ export class PaymentGatewayService {
     const sortedKeys = Object.keys(input).sort();
 
     const hashData = sortedKeys
-      .map((key) => `${this.vnpEncode(key)}=${this.vnpEncode(String(input[key]))}`)
+      .map(
+        (key) => `${this.vnpEncode(key)}=${this.vnpEncode(String(input[key]))}`,
+      )
       .join('&');
 
     const check = crypto
@@ -193,6 +210,18 @@ export class PaymentGatewayService {
       typeof amountRawValue === 'number' && Number.isFinite(amountRawValue)
         ? amountRawValue / 100
         : undefined;
+
+    if (vnp.debug) {
+      console.log('[VNPAY RETURN DEBUG]', {
+        valid,
+        txnRef: input.vnp_TxnRef,
+        responseCode: input.vnp_ResponseCode,
+        amount,
+        amountRaw: amountRawValue,
+        payDate: input.vnp_PayDate,
+        hasSecureHash: Boolean(secureHash),
+      });
+    }
 
     return {
       valid,
@@ -231,11 +260,11 @@ export class PaymentGatewayService {
   }
 
   /**
-   * VNPAY sandbox/production cần format dạng yyyyMMddHHmmss theo giờ Việt Nam.
+   * VNPAY cần thời gian dạng yyyyMMddHHmmss theo giờ Việt Nam.
    *
-   * Local máy bạn thường đang ở UTC+7 nên code cũ chạy đúng.
-   * Server deploy thường chạy UTC nên code cũ bị lùi 7 tiếng,
-   * làm VNPAY hiểu giao dịch đã hết hạn và trả Error code=15.
+   * Local máy bạn thường là UTC+7 nên code cũ chạy bình thường.
+   * AWS/server deploy thường là UTC nên code cũ bị lùi 7 tiếng,
+   * dẫn tới VNPAY báo Error code=15.
    */
   private formatVnpayDateVietnam(date: Date) {
     const vietnamTime = new Date(date.getTime() + 7 * 60 * 60 * 1000);
