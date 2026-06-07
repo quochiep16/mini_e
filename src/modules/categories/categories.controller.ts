@@ -23,6 +23,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { AppRole } from '../../common/constants/roles';
 
 import { CategoriesService } from './categories.service';
+import {CategorySuggestionService,type SuggestCategoryInput,} from './services/category-suggestion.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { SearchCategoriesDto } from './dto/search-categories.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
@@ -101,7 +102,10 @@ function uploadBufferToCloudinary(file: Express.Multer.File): Promise<string> {
 
 @Controller('categories')
 export class CategoriesController {
-  constructor(private readonly categoriesService: CategoriesService) {}
+  constructor(
+    private readonly categoriesService: CategoriesService,
+    private readonly categorySuggestionService: CategorySuggestionService,
+  ) {}
 
   /**
    * User / Home / MainLayout:
@@ -157,6 +161,21 @@ export class CategoriesController {
   @Roles(AppRole.SELLER, AppRole.ADMIN)
   async sellerOptions() {
     const data = await this.categoriesService.findSellerOptions();
+
+    return {
+      success: true,
+      data,
+    };
+  }
+
+  /**
+   * Seller/Admin:
+   * Gợi ý category khi seller nhập tên sản phẩm.
+   */
+  @Post('suggestions')
+  @Roles(AppRole.SELLER, AppRole.ADMIN)
+  async suggestCategories(@Body() body: SuggestCategoryInput) {
+    const data = await this.categorySuggestionService.suggest(body);
 
     return {
       success: true,
