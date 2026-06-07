@@ -30,7 +30,7 @@ export class CreateProductDto {
   @IsOptional()
   @IsString({ message: 'description phải là chuỗi' })
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  @MaxLength(2000, { message: 'description tối đa 2000 ký tự' })
+  @MaxLength(20000, { message: 'description tối đa 20000 ký tự' })
   description?: string;
 
   @Type(() => Number)

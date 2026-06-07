@@ -680,6 +680,152 @@ export class RecommendationsService {
     };
   }
 
+
+  async getTrendingProducts(
+    userId: number | null,
+    query: RecommendationQueryDto,
+  ) {
+    const page = Math.max(1, Number(query.page ?? 1));
+    const limit = Math.max(1, Number(query.limit ?? 20));
+    const offset = (page - 1) * limit;
+
+    const safeUserId = userId ?? 0;
+
+    const categoryId = query.categoryId ? Number(query.categoryId) : null;
+    const categoryIds = categoryId
+      ? await this.getCategoryAndDescendantIds(categoryId)
+      : [];
+
+    if (categoryId && categoryIds.length === 0) {
+      return {
+        page,
+        limit,
+        total: 0,
+        pageCount: 1,
+        source: 'category_not_found',
+        message: 'Không tìm thấy category',
+        categoryId,
+        categoryIds: [],
+        items: [],
+      };
+    }
+
+    const categoryFilterSql = categoryIds.length
+      ? 'AND p.category_id IN (?)'
+      : '';
+
+    const totalRows = await this.dataSource.query(
+      `
+      SELECT COUNT(*) AS total
+      FROM product_trending ptg
+      INNER JOIN products p
+        ON p.id = ptg.product_id
+      WHERE ptg.is_trending = 1
+        AND p.deleted_at IS NULL
+        AND p.stock > 0
+        AND p.status = 'ACTIVE'
+        ${categoryFilterSql}
+      `,
+      [...(categoryIds.length ? [categoryIds] : [])],
+    );
+
+    const total = Number(totalRows?.[0]?.total ?? 0);
+    const pageCount = Math.max(1, Math.ceil(total / limit));
+
+    const items = await this.dataSource.query(
+      `
+      SELECT
+        p.id,
+        p.shop_id AS shopId,
+        p.category_id AS categoryId,
+        p.title,
+        p.slug,
+        p.description,
+        p.price,
+        p.compare_at_price AS compareAtPrice,
+        p.currency,
+        p.stock,
+        p.sold,
+        p.status,
+        p.created_at AS createdAt,
+        p.updated_at AS updatedAt,
+
+        s.name AS shopName,
+        c.name AS categoryName,
+
+        (
+          SELECT pi.url
+          FROM product_images pi
+          WHERE pi.product_id = p.id
+          ORDER BY pi.is_main DESC, pi.position ASC, pi.id ASC
+          LIMIT 1
+        ) AS imageUrl,
+
+        CASE
+          WHEN ? > 0 AND pf.id IS NOT NULL THEN 1
+          ELSE 0
+        END AS isFavorite,
+
+        ptg.trending_bonus AS trendingBonus,
+        ptg.trending_rank AS trendingRank,
+        ptg.score_7d AS trendingScore7d,
+        ptg.click_count_7d AS clickCount7d,
+        ptg.view_count_7d AS viewCount7d,
+        ptg.add_to_cart_count_7d AS addToCartCount7d,
+        ptg.favorite_count_7d AS favoriteCount7d,
+        ptg.purchase_count_7d AS purchaseCount7d,
+        ptg.last_interacted_at AS lastInteractedAt
+
+      FROM product_trending ptg
+      INNER JOIN products p
+        ON p.id = ptg.product_id
+
+      LEFT JOIN shops s
+        ON s.id = p.shop_id
+
+      LEFT JOIN categories c
+        ON c.id = p.category_id
+
+      LEFT JOIN product_favorites pf
+        ON pf.product_id = p.id
+        AND pf.user_id = ?
+
+      WHERE ptg.is_trending = 1
+        AND p.deleted_at IS NULL
+        AND p.stock > 0
+        AND p.status = 'ACTIVE'
+        ${categoryFilterSql}
+
+      ORDER BY
+        ptg.trending_rank ASC,
+        ptg.score_7d DESC,
+        p.sold DESC,
+        p.created_at DESC
+
+      LIMIT ? OFFSET ?
+      `,
+      [
+        safeUserId,
+        safeUserId,
+        ...(categoryIds.length ? [categoryIds] : []),
+        limit,
+        offset,
+      ],
+    );
+
+    return {
+      page,
+      limit,
+      total,
+      pageCount,
+      source: 'trending',
+      message: 'Danh sách sản phẩm đang trend trong 7 ngày gần nhất',
+      categoryId,
+      categoryIds,
+      items,
+    };
+  }
+
   async getRecommendedProducts(userId: number, query: RecommendationQueryDto) {
     if (!userId) {
       throw new BadRequestException('Không xác định được người dùng');
@@ -698,6 +844,8 @@ export class RecommendationsService {
       return {
         page,
         limit,
+        total: 0,
+        pageCount: 1,
         source: 'category_not_found',
         message: 'Không tìm thấy category',
         categoryId,
@@ -709,6 +857,21 @@ export class RecommendationsService {
     const categoryFilterSql = categoryIds.length
       ? 'AND p.category_id IN (?)'
       : '';
+
+    const totalRows = await this.dataSource.query(
+      `
+      SELECT COUNT(*) AS total
+      FROM products p
+      WHERE p.deleted_at IS NULL
+        AND p.stock > 0
+        AND p.status = 'ACTIVE'
+        ${categoryFilterSql}
+      `,
+      [...(categoryIds.length ? [categoryIds] : [])],
+    );
+
+    const total = Number(totalRows?.[0]?.total ?? 0);
+    const pageCount = Math.max(1, Math.ceil(total / limit));
 
     const preferenceRows = await this.dataSource.query(
       `
@@ -965,6 +1128,8 @@ export class RecommendationsService {
     return {
       page,
       limit,
+      total,
+      pageCount,
       categoryId,
       categoryIds,
       source: hasPreference ? 'personalized' : 'fallback',

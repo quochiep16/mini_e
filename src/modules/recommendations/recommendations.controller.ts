@@ -16,6 +16,7 @@ import { RecommendationQueryDto } from './dto/recommendation-query.dto';
 import { AccessTokenGuard } from '../../common/guards/access-token.guard';
 import { ActiveUserGuard } from '../../common/guards/active-user.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Public } from '../../common/decorators/public.decorator';
 
 @Controller('recommendations')
 @UseGuards(AccessTokenGuard, ActiveUserGuard)
@@ -32,6 +33,27 @@ export class RecommendationsController {
     }
 
     return Number(id);
+  }
+
+  private getOptionalUserId(user: any): number | null {
+    const id = user?.id ?? user?.userId ?? user?.sub;
+
+    if (!id) {
+      return null;
+    }
+
+    const userId = Number(id);
+    return Number.isFinite(userId) && userId > 0 ? userId : null;
+  }
+
+  @Public()
+  @Get('trending-products')
+  getTrendingProducts(
+    @CurrentUser() user: any,
+    @Query() query: RecommendationQueryDto,
+  ) {
+    const userId = this.getOptionalUserId(user);
+    return this.recommendationsService.getTrendingProducts(userId, query);
   }
 
   @Post('events')
@@ -91,8 +113,7 @@ export class RecommendationsController {
     return this.recommendationsService.getFavorites(userId, query);
   }
 
-  @Get('preferences')
-  @Get('me/preferences')
+  @Get(['preferences', 'me/preferences'])
   getMyCategoryPreferences(@CurrentUser() user: any) {
     const userId = this.getUserId(user);
     return this.recommendationsService.getMyCategoryPreferences(userId);
