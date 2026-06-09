@@ -193,6 +193,113 @@ export class ProductsController {
     return { success: true, data: product };
   }
 
+  // SELLER/ADMIN: thêm ảnh cho sản phẩm sau khi đã tạo
+  @Roles(AppRole.ADMIN, AppRole.SELLER)
+  @UseGuards(AccessTokenGuard)
+  @Post(':id/images')
+  @UseInterceptors(FilesInterceptor('images', MAX_PRODUCT_IMAGES, uploadOptions))
+  async addProductImages(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser('sub') userId: number,
+    @CurrentUser('role') role: UserRole,
+    @UploadedFiles() files: Express.Multer.File[] = [],
+  ) {
+    if (!files.length) {
+      throw new BadRequestException('Vui lòng chọn ít nhất 1 ảnh');
+    }
+
+    const remainingSlots = await this.productsService.getRemainingImageSlots(
+      id,
+      userId,
+      role,
+    );
+
+    if (remainingSlots <= 0) {
+      throw new BadRequestException(
+        `Sản phẩm chỉ được tối đa ${MAX_PRODUCT_IMAGES} ảnh`,
+      );
+    }
+
+    if (files.length > remainingSlots) {
+      throw new BadRequestException(
+        `Sản phẩm chỉ được tối đa ${MAX_PRODUCT_IMAGES} ảnh. Bạn còn được thêm ${remainingSlots} ảnh.`,
+      );
+    }
+
+    const cloudinaryUrls = await Promise.all(
+      files.map((file) => uploadBufferToCloudinary(file)),
+    );
+
+    const data = await this.productsService.addProductImages(
+      id,
+      userId,
+      role,
+      cloudinaryUrls,
+    );
+
+    return { success: true, data };
+  }
+
+  // SELLER/ADMIN: xóa 1 ảnh của sản phẩm
+  @Roles(AppRole.ADMIN, AppRole.SELLER)
+  @UseGuards(AccessTokenGuard)
+  @Delete(':id/images/:imageId')
+  async deleteProductImage(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('imageId', ParseIntPipe) imageId: number,
+    @CurrentUser('sub') userId: number,
+    @CurrentUser('role') role: UserRole,
+  ) {
+    const data = await this.productsService.deleteProductImage(
+      id,
+      imageId,
+      userId,
+      role,
+    );
+
+    return { success: true, data };
+  }
+
+  // SELLER/ADMIN: đặt ảnh chính cho sản phẩm
+  @Roles(AppRole.ADMIN, AppRole.SELLER)
+  @UseGuards(AccessTokenGuard)
+  @Patch(':id/images/:imageId/main')
+  async setMainProductImage(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('imageId', ParseIntPipe) imageId: number,
+    @CurrentUser('sub') userId: number,
+    @CurrentUser('role') role: UserRole,
+  ) {
+    const data = await this.productsService.setMainProductImage(
+      id,
+      imageId,
+      userId,
+      role,
+    );
+
+    return { success: true, data };
+  }
+
+  // SELLER/ADMIN: sắp xếp thứ tự ảnh
+  @Roles(AppRole.ADMIN, AppRole.SELLER)
+  @UseGuards(AccessTokenGuard)
+  @Patch(':id/images/reorder')
+  async reorderProductImages(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser('sub') userId: number,
+    @CurrentUser('role') role: UserRole,
+    @Body('imageIds') imageIds: number[],
+  ) {
+    const data = await this.productsService.reorderProductImages(
+      id,
+      userId,
+      role,
+      imageIds,
+    );
+
+    return { success: true, data };
+  }
+
   // SELLER/ADMIN: sửa sản phẩm
   @Roles(AppRole.ADMIN, AppRole.SELLER)
   @UseGuards(AccessTokenGuard)

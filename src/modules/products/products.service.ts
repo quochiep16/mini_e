@@ -43,6 +43,7 @@ type ProductWithImages = Product & {
 @Injectable()
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
+  private readonly maxProductImages = 10;
 
   constructor(
     private readonly dataSource: DataSource,
@@ -1048,6 +1049,232 @@ export class ProductsService {
     });
 
     return this.mapVariantRows(schema, variants);
+  }
+
+  async getRemainingImageSlots(
+    id: number,
+    actorId: number,
+    actorRole: UserRole,
+  ) {
+    const product = await this.assertCanManageProduct(id, actorId, actorRole);
+
+    this.assertProductNotDeleted(product);
+    this.assertSellerCanEditProduct(product, actorRole);
+
+    const currentCount = await this.imagesRepo.count({
+      where: { productId: id },
+    });
+
+    return Math.max(0, this.maxProductImages - currentCount);
+  }
+
+  async addProductImages(
+    id: number,
+    actorId: number,
+    actorRole: UserRole,
+    urls: string[],
+  ) {
+    const product = await this.assertCanManageProduct(id, actorId, actorRole);
+
+    this.assertProductNotDeleted(product);
+    this.assertSellerCanEditProduct(product, actorRole);
+
+    const cleanUrls = (urls ?? [])
+      .map((url) => String(url ?? '').trim())
+      .filter(Boolean);
+
+    if (!cleanUrls.length) {
+      throw new BadRequestException('Danh sách ảnh không hợp lệ');
+    }
+
+    const existingImages = await this.imagesRepo.find({
+      where: { productId: id },
+      order: { position: 'ASC', id: 'ASC' },
+    });
+
+    if (existingImages.length + cleanUrls.length > this.maxProductImages) {
+      throw new BadRequestException(
+        `Sản phẩm chỉ được tối đa ${this.maxProductImages} ảnh`,
+      );
+    }
+
+    const hasMainImage = existingImages.some((image) => image.isMain);
+    const maxPosition = existingImages.reduce(
+      (max, image) => Math.max(max, Number(image.position ?? 0)),
+      existingImages.length ? 0 : -1,
+    );
+
+    const newImages = cleanUrls.map((url, index) =>
+      this.imagesRepo.create({
+        productId: id,
+        url,
+        position: maxPosition + index + 1,
+        isMain: !hasMainImage && index === 0,
+      }),
+    );
+
+    await this.imagesRepo.save(newImages);
+
+    return this.findManageDetail(id, actorId, actorRole);
+  }
+
+  async deleteProductImage(
+    productId: number,
+    imageId: number,
+    actorId: number,
+    actorRole: UserRole,
+  ) {
+    const product = await this.assertCanManageProduct(
+      productId,
+      actorId,
+      actorRole,
+    );
+
+    this.assertProductNotDeleted(product);
+    this.assertSellerCanEditProduct(product, actorRole);
+
+    const image = await this.imagesRepo.findOne({
+      where: { id: imageId, productId },
+    });
+
+    if (!image) {
+      throw new NotFoundException('Không tìm thấy ảnh của sản phẩm');
+    }
+
+    const wasMain = image.isMain;
+
+    await this.dataSource.transaction(async (trx) => {
+      const imageRepo = trx.getRepository(ProductImage);
+      const variantRepo = trx.getRepository(ProductVariant);
+
+      // Nếu biến thể đang dùng ảnh này thì bỏ liên kết imageId để tránh lỗi FK.
+      await variantRepo.update({ productId, imageId } as any, {
+        imageId: null,
+      });
+
+      await imageRepo.delete({ id: imageId, productId } as any);
+
+      const remainingImages = await imageRepo.find({
+        where: { productId },
+        order: { position: 'ASC', id: 'ASC' },
+      });
+
+      for (let index = 0; index < remainingImages.length; index += 1) {
+        remainingImages[index].position = index;
+      }
+
+      if (wasMain && remainingImages.length > 0) {
+        remainingImages[0].isMain = true;
+
+        for (let index = 1; index < remainingImages.length; index += 1) {
+          remainingImages[index].isMain = false;
+        }
+      }
+
+      if (remainingImages.length > 0) {
+        await imageRepo.save(remainingImages);
+      }
+    });
+
+    return this.findManageDetail(productId, actorId, actorRole);
+  }
+
+  async setMainProductImage(
+    productId: number,
+    imageId: number,
+    actorId: number,
+    actorRole: UserRole,
+  ) {
+    const product = await this.assertCanManageProduct(
+      productId,
+      actorId,
+      actorRole,
+    );
+
+    this.assertProductNotDeleted(product);
+    this.assertSellerCanEditProduct(product, actorRole);
+
+    const image = await this.imagesRepo.findOne({
+      where: { id: imageId, productId },
+    });
+
+    if (!image) {
+      throw new NotFoundException('Không tìm thấy ảnh của sản phẩm');
+    }
+
+    await this.dataSource.transaction(async (trx) => {
+      const imageRepo = trx.getRepository(ProductImage);
+
+      await imageRepo.update({ productId } as any, { isMain: false });
+
+      await imageRepo.update(
+        { id: imageId, productId } as any,
+        { isMain: true },
+      );
+    });
+
+    return this.findManageDetail(productId, actorId, actorRole);
+  }
+
+  async reorderProductImages(
+    productId: number,
+    actorId: number,
+    actorRole: UserRole,
+    imageIds: number[],
+  ) {
+    const product = await this.assertCanManageProduct(
+      productId,
+      actorId,
+      actorRole,
+    );
+
+    this.assertProductNotDeleted(product);
+    this.assertSellerCanEditProduct(product, actorRole);
+
+    if (!Array.isArray(imageIds) || !imageIds.length) {
+      throw new BadRequestException('imageIds phải là mảng id ảnh');
+    }
+
+    const cleanIds = imageIds
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0);
+
+    const uniqueIds = Array.from(new Set(cleanIds));
+
+    if (uniqueIds.length !== imageIds.length) {
+      throw new BadRequestException(
+        'Danh sách imageIds không hợp lệ hoặc bị trùng',
+      );
+    }
+
+    const images = await this.imagesRepo.find({
+      where: { productId },
+      order: { position: 'ASC', id: 'ASC' },
+    });
+
+    const existingIds = images.map((image) => image.id).sort((a, b) => a - b);
+    const incomingIds = [...uniqueIds].sort((a, b) => a - b);
+
+    if (
+      existingIds.length !== incomingIds.length ||
+      existingIds.some((id, index) => id !== incomingIds[index])
+    ) {
+      throw new BadRequestException(
+        'imageIds phải chứa đầy đủ ảnh hiện tại của sản phẩm',
+      );
+    }
+
+    const imageMap = new Map(images.map((image) => [image.id, image]));
+
+    const reorderedImages = uniqueIds.map((id, index) => {
+      const image = imageMap.get(id)!;
+      image.position = index;
+      return image;
+    });
+
+    await this.imagesRepo.save(reorderedImages);
+
+    return this.findManageDetail(productId, actorId, actorRole);
   }
 
   async updateProduct(
